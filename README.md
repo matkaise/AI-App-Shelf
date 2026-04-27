@@ -5,6 +5,7 @@ Zentrale Ablage für KI-generierte Single-File-HTML-Apps aus ChatGPT Canvas, Cla
 ## Funktionen
 
 - Apps als vollständigen HTML-Code speichern
+- React/JSX-Code aus ChatGPT Canvas automatisch ausführen
 - Galerie mit isolierten Live-Vorschauen
 - Editor mit Entwurfs-Vorschau
 - Suche über Name, Beschreibung und Tags
@@ -81,6 +82,22 @@ Wenn `GITHUB_TOKEN` gesetzt ist, wird dieser Token bevorzugt verwendet und nicht
 Gespeicherte HTML-Apps werden mit Browser-Sandbox und Content-Security-Policy ausgeliefert. Zusätzlich müssen schreibende API-Requests einen internen Header senden, damit sandboxed Apps nicht einfach Verwaltungsaktionen auslösen können.
 
 Für ein reines Heimnetz kann die App ohne Passwort laufen. Sobald sie über Reverse Proxy, VPN-Portal oder Internet erreichbar ist, sollte `APP_PASSWORD` gesetzt oder der Zugriff im Reverse Proxy geschützt werden.
+
+## React-Code aus Canvas
+
+Du kannst neben vollständigem HTML auch typische React/JSX-Snippets aus ChatGPT Canvas einfügen, zum Beispiel Code mit:
+
+```js
+import React, { useState } from "react";
+
+export default function App() {
+  return <div className="p-6">Hallo</div>;
+}
+```
+
+AI App Shelf erkennt solche Snippets automatisch und lädt dafür React, ReactDOM, Babel und Tailwind im Sandbox-Frame. Einfache React/Tailwind-Apps funktionieren dadurch direkt.
+
+Wichtig: Beliebige Imports aus npm-Paketen werden nicht automatisch gebündelt. Wenn eine Canvas-App zum Beispiel `lucide-react`, `recharts` oder lokale UI-Komponenten importiert, muss dafür später gezielt Support ergänzt oder der Code als vollständige HTML-Datei exportiert werden.
 
 ## Entwicklung
 
