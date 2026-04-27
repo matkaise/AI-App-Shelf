@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>AI App Shelf</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">AI</div>
+        <div>
+          <h1>AI App Shelf</h1>
+          <p id="appCount">0 Apps</p>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <button id="pullBtn" class="ghost" type="button">Pull</button>
+        <button id="pushBtn" class="ghost" type="button">Push</button>
+        <button id="settingsBtn" class="ghost" type="button">Einstellungen</button>
+        <button id="newAppBtn" class="primary" type="button">Neue App</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="library" aria-label="App-Bibliothek">
+        <div class="library-toolbar">
+          <label class="search-field">
+            <span>Suche</span>
+            <input id="searchInput" type="search" placeholder="Name, Beschreibung oder Tags" autocomplete="off" />
+          </label>
+          <button id="refreshBtn" class="compact" type="button">Aktualisieren</button>
+        </div>
+
+        <div id="emptyState" class="empty-state" hidden>
+          <h2>Noch keine Apps</h2>
+          <button id="emptyNewBtn" class="primary" type="button">Erste App anlegen</button>
+        </div>
+
+        <div id="appGrid" class="app-grid" aria-live="polite"></div>
+      </section>
+
+      <aside id="editorPanel" class="editor-panel" aria-label="App-Editor">
+        <form id="appForm" class="editor-form">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow" id="editorMode">Neue App</p>
+              <h2 id="editorTitle">HTML einfügen</h2>
+            </div>
+            <button id="closeEditorBtn" class="compact mobile-only" type="button">Schließen</button>
+          </div>
+
+          <label>
+            <span>Name</span>
+            <input id="nameInput" name="name" required maxlength="120" autocomplete="off" />
+          </label>
+
+          <label>
+            <span>Beschreibung</span>
+            <textarea id="descriptionInput" name="description" rows="3" maxlength="1000"></textarea>
+          </label>
+
+          <label>
+            <span>Tags</span>
+            <input id="tagsInput" name="tags" maxlength="300" placeholder="Tools, Spiele, Rechner" autocomplete="off" />
+          </label>
+
+          <label class="code-field">
+            <span>HTML</span>
+            <textarea id="codeInput" name="code" spellcheck="false" required></textarea>
+          </label>
+
+          <div class="editor-actions">
+            <button id="saveBtn" class="primary" type="submit">Speichern</button>
+            <button id="duplicateBtn" class="ghost" type="button" disabled>Duplizieren</button>
+            <button id="openBtn" class="ghost" type="button" disabled>Öffnen</button>
+            <button id="deleteBtn" class="danger" type="button" disabled>Löschen</button>
+          </div>
+        </form>
+
+        <section class="preview-panel" aria-label="Vorschau">
+          <div class="preview-head">
+            <h3>Vorschau</h3>
+            <span id="previewState">Entwurf</span>
+          </div>
+          <iframe id="previewFrame" title="App-Vorschau" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock" referrerpolicy="no-referrer"></iframe>
+        </section>
+      </aside>
+    </main>
+
+    <dialog id="settingsDialog" class="settings-dialog">
+      <form id="settingsForm" method="dialog">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Sync</p>
+            <h2>Einstellungen</h2>
+          </div>
+          <button id="closeSettingsBtn" class="compact" type="button">Schließen</button>
+        </div>
+
+        <label>
+          <span>GitHub Repo</span>
+          <input id="repoInput" placeholder="owner/name" autocomplete="off" />
+        </label>
+
+        <div class="split-fields">
+          <label>
+            <span>Branch</span>
+            <input id="branchInput" placeholder="main" autocomplete="off" />
+          </label>
+          <label>
+            <span>Datei</span>
+            <input id="fileInput" placeholder="apps.json" autocomplete="off" />
+          </label>
+        </div>
+
+        <label>
+          <span>GitHub Token</span>
+          <input id="tokenInput" type="password" autocomplete="off" placeholder="Neuen Token eintragen" />
+        </label>
+
+        <label class="check-row">
+          <input id="clearTokenInput" type="checkbox" />
+          <span>Gespeicherten Token löschen</span>
+        </label>
+
+        <p id="settingsMeta" class="meta-line"></p>
+
+        <div class="dialog-actions">
+          <button id="saveSettingsBtn" class="primary" value="default" type="submit">Speichern</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>
