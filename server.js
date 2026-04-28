@@ -57,7 +57,17 @@ app.get("/health", (req, res) => {
 app.use(requireBasicAuth);
 app.use(express.json({ limit: JSON_LIMIT }));
 app.use(requireApiWriteHeader);
-app.use(express.static(path.join(__dirname, "public"), { etag: true, maxAge: "1h" }));
+app.use(
+  express.static(path.join(__dirname, "public"), {
+    etag: true,
+    maxAge: 0,
+    setHeaders(res, filePath) {
+      if (/\.(?:html|css|js)$/i.test(filePath)) {
+        res.setHeader("Cache-Control", "no-store");
+      }
+    },
+  })
+);
 
 function requireBasicAuth(req, res, next) {
   if (!APP_PASSWORD || req.path === "/health") return next();
