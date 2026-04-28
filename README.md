@@ -126,7 +126,12 @@ export default function App() {
 
 AI App Shelf erkennt solche Snippets automatisch und lädt dafür React, ReactDOM, Babel und Tailwind im Sandbox-Frame. Einfache React/Tailwind-Apps funktionieren dadurch direkt.
 
-Wichtig: Beliebige Imports aus npm-Paketen werden nicht automatisch gebündelt. Wenn eine Canvas-App zum Beispiel `lucide-react`, `recharts` oder lokale UI-Komponenten importiert, muss dafür später gezielt Support ergänzt oder der Code als vollständige HTML-Datei exportiert werden.
+Unterstützte Canvas-Imports werden im Sandbox-Frame über CDN-Module geladen:
+
+- `lucide-react`
+- `recharts`
+
+Beliebige npm-Pakete und lokale UI-Komponenten werden nicht automatisch gebündelt. Wenn eine Canvas-App andere Imports nutzt, zeigt der Editor einen Hinweis und entfernt diese Import-Zeilen aus der Vorschau.
 
 ## Entwicklung
 

@@ -88,18 +88,34 @@ function legacyEncryptSecret(secret, value) {
   return `enc:v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
 }
 
-function testRendererWarnings() {
+function testRendererImports() {
   const rendererPath = path.join(root, "public", "render.js");
   const renderer = require(rendererPath);
-  const rendered = renderer.renderRunnableApp(`import { Star } from "lucide-react";
+  const supported = renderer.renderRunnableApp(`import { Star as Icon } from "lucide-react";
 
 export default function App() {
-  return <Star />;
+  return <Icon />;
 }`);
 
-  expect(rendered.type === "react", "renderer should detect React snippets");
-  expect(rendered.warnings.some((warning) => warning.includes("Unsupported import removed")), "unsupported imports should be reported");
-  expect(rendered.html.includes("Unsupported import removed by AI App Shelf"), "rendered HTML should include a removed import comment");
+  expect(supported.type === "react", "renderer should detect React snippets");
+  expect(!supported.warnings.some((warning) => warning.includes("Unsupported import removed")), "lucide imports should be supported");
+  expect(supported.html.includes("lucide-react@1.11.0"), "supported import should load lucide-react from CDN");
+  expect(supported.html.includes('const Icon = __appShelfPick'), "supported named import should become a local binding");
+
+  const unsupported = renderer.renderRunnableApp(`import { Widget } from "not-a-real-canvas-lib";
+
+export default function App() {
+  return <Widget />;
+}`);
+
+  expect(
+    unsupported.warnings.some((warning) => warning.includes("Unsupported import removed")),
+    "unsupported imports should still be reported"
+  );
+  expect(
+    unsupported.html.includes("Unsupported import removed by AI App Shelf"),
+    "rendered HTML should include a removed import comment"
+  );
   delete globalThis.AppShelfRenderer;
 }
 
@@ -157,7 +173,7 @@ export default function App() {
     expect(run.headers.get("x-app-shelf-source-type") === "react", "react source type not detected");
     expect(!run.headers.get("content-security-policy").includes("frame-ancestors"), "run CSP should remain embeddable");
     const rendered = await run.text();
-    expect(rendered.includes("react.production.min.js"), "react runtime missing");
+    expect(rendered.includes("https://esm.sh/react@18.3.1"), "react import map missing");
     expect(!rendered.includes("import React"), "react import was not stripped");
 
     const settings = await fetch(`${server.base}/api/settings`).then((res) => res.json());
@@ -369,7 +385,7 @@ async function testTrustProxyRateLimitIsolation() {
 }
 
 (async () => {
-  testRendererWarnings();
+  testRendererImports();
   await testFailClosed();
   await testAppFlow();
   await testTokenRequiresSecret();
