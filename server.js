@@ -18,6 +18,9 @@ const ALLOW_PLAINTEXT_SECRETS = process.env.ALLOW_PLAINTEXT_SECRETS === "true";
 const ENV_GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
 const JSON_LIMIT = process.env.JSON_LIMIT || "15mb";
 const MAX_CODE_BYTES = Number.parseInt(process.env.MAX_CODE_BYTES || `${1024 * 1024 * 5}`, 10);
+const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_RATE_LIMIT_MAX = 30;
+const authFailures = new Map();
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -48,12 +51,17 @@ db.exec(`
 `);
 
 ensureColumn("apps", "thumbnail", "TEXT DEFAULT ''");
-backfillMissingThumbnails();
+migrateStoredGithubToken();
+queueThumbnailBackfill();
 
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
+  if (!req.path.startsWith("/run/")) {
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'");
+    res.setHeader("X-Frame-Options", "DENY");
+  }
   next();
 });
 
@@ -85,28 +93,61 @@ function requireBasicAuth(req, res, next) {
       .send("AI App Shelf is locked. Set APP_PASSWORD or explicitly set ALLOW_UNAUTHENTICATED=true.");
   }
 
+  if (isAuthRateLimited(req)) return res.status(429).send("Too many authentication attempts");
+
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
-  if (scheme !== "Basic" || !encoded) return denyBasicAuth(res);
+  if (scheme !== "Basic" || !encoded) return denyBasicAuth(req, res);
 
   let decoded = "";
   try {
     decoded = Buffer.from(encoded, "base64").toString("utf8");
   } catch {
-    return denyBasicAuth(res);
+    return denyBasicAuth(req, res);
   }
 
   const separator = decoded.indexOf(":");
   const username = separator >= 0 ? decoded.slice(0, separator) : "";
   const password = separator >= 0 ? decoded.slice(separator + 1) : "";
 
-  if (safeEqual(username, APP_USERNAME) && safeEqual(password, APP_PASSWORD)) return next();
-  return denyBasicAuth(res);
+  if (safeEqual(username, APP_USERNAME) && safeEqual(password, APP_PASSWORD)) {
+    clearAuthFailures(req);
+    return next();
+  }
+  return denyBasicAuth(req, res);
 }
 
-function denyBasicAuth(res) {
+function denyBasicAuth(req, res) {
+  recordAuthFailure(req);
   res.setHeader("WWW-Authenticate", 'Basic realm="AI App Shelf"');
   res.status(401).send("Authentication required");
+}
+
+function authRateKey(req) {
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
+function getAuthFailureBucket(req) {
+  const key = authRateKey(req);
+  const now = Date.now();
+  const current = authFailures.get(key);
+  if (current && now - current.startedAt < AUTH_RATE_LIMIT_WINDOW_MS) return current;
+
+  const fresh = { count: 0, startedAt: now };
+  authFailures.set(key, fresh);
+  return fresh;
+}
+
+function isAuthRateLimited(req) {
+  return getAuthFailureBucket(req).count >= AUTH_RATE_LIMIT_MAX;
+}
+
+function recordAuthFailure(req) {
+  getAuthFailureBucket(req).count += 1;
+}
+
+function clearAuthFailures(req) {
+  authFailures.delete(authRateKey(req));
 }
 
 function safeEqual(a, b) {
@@ -156,20 +197,21 @@ function ensureColumn(table, column, definition) {
 function encryptSecret(value) {
   if (!APP_SECRET) throw httpError(400, "Set APP_SECRET before storing secrets in the database");
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", secretKey(), iv);
+  const cipher = crypto.createCipheriv("aes-256-gcm", secretKey(getOrCreateSecretSalt()), iv);
   const ciphertext = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return `enc:v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
+  return `enc:v2:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
 }
 
 function decryptSecret(value) {
   if (!APP_SECRET) throw new Error("APP_SECRET is required to decrypt this secret");
   const [prefix, version, ivText, tagText, ciphertextText] = String(value).split(":");
-  if (prefix !== "enc" || version !== "v1" || !ivText || !tagText || !ciphertextText) {
+  if (prefix !== "enc" || !["v1", "v2"].includes(version) || !ivText || !tagText || !ciphertextText) {
     throw new Error("Unsupported encrypted secret format");
   }
 
-  const decipher = crypto.createDecipheriv("aes-256-gcm", secretKey(), Buffer.from(ivText, "base64url"));
+  const key = version === "v1" ? legacySecretKey() : secretKey(getOrCreateSecretSalt(false));
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(ivText, "base64url"));
   decipher.setAuthTag(Buffer.from(tagText, "base64url"));
   return Buffer.concat([
     decipher.update(Buffer.from(ciphertextText, "base64url")),
@@ -177,12 +219,31 @@ function decryptSecret(value) {
   ]).toString("utf8");
 }
 
-function secretKey() {
+function legacySecretKey() {
   return crypto.createHash("sha256").update(APP_SECRET).digest();
 }
 
+function secretKey(salt) {
+  return crypto.scryptSync(APP_SECRET, Buffer.from(salt, "base64url"), 32, {
+    cost: 16384,
+    blockSize: 8,
+    parallelization: 1,
+    maxmem: 64 * 1024 * 1024,
+  });
+}
+
+function getOrCreateSecretSalt(createIfMissing = true) {
+  const existing = getSetting("secretSalt");
+  if (existing) return existing;
+  if (!createIfMissing) throw new Error("Missing secret salt");
+
+  const salt = crypto.randomBytes(16).toString("base64url");
+  setSetting("secretSalt", salt);
+  return salt;
+}
+
 function isEncryptedSecret(value) {
-  return String(value || "").startsWith("enc:v1:");
+  return /^enc:v[12]:/.test(String(value || ""));
 }
 
 function readStoredGithubToken() {
@@ -243,13 +304,12 @@ function readStoredGithubToken() {
     };
   }
 
-  setSetting("githubToken", encryptSecret(stored));
   return {
     token: stored,
     configured: true,
     usable: true,
-    source: "database",
-    storage: "encrypted",
+    source: "database-plaintext",
+    storage: "plaintext",
     needsSecret: false,
   };
 }
@@ -271,6 +331,23 @@ function storeGithubToken(token) {
   }
 
   throw httpError(400, "Set APP_SECRET or GITHUB_TOKEN before saving a GitHub token");
+}
+
+function migrateStoredGithubToken() {
+  const stored = getSetting("githubToken") || "";
+  if (!stored || !APP_SECRET) return;
+
+  try {
+    if (isEncryptedSecret(stored)) {
+      if (stored.startsWith("enc:v2:")) return;
+      setSetting("githubToken", encryptSecret(decryptSecret(stored)));
+      return;
+    }
+
+    setSetting("githubToken", encryptSecret(stored));
+  } catch (err) {
+    console.warn(`Could not migrate stored GitHub token: ${err.message}`);
+  }
 }
 
 function cleanString(value, fallback, maxLength) {
@@ -400,16 +477,22 @@ function escapeXml(value) {
     .replace(/"/g, "&quot;");
 }
 
-function backfillMissingThumbnails() {
+function queueThumbnailBackfill() {
+  setImmediate(() => backfillMissingThumbnails());
+}
+
+function backfillMissingThumbnails(batchSize = 250) {
   const rows = db
-    .prepare("SELECT id, name, description, tags, code FROM apps WHERE thumbnail IS NULL OR thumbnail = ''")
-    .all();
+    .prepare("SELECT id, name, description, tags, code FROM apps WHERE thumbnail IS NULL OR thumbnail = '' LIMIT ?")
+    .all(batchSize);
   if (!rows.length) return;
 
   const update = db.prepare("UPDATE apps SET thumbnail = ? WHERE id = ?");
   db.transaction((apps) => {
     for (const appInput of apps) update.run(buildAppThumbnail(appInput), appInput.id);
   })(rows);
+
+  if (rows.length === batchSize) queueThumbnailBackfill();
 }
 
 function normalizeRepo(repo) {
@@ -537,7 +620,9 @@ app.get("/api/apps", (req, res) => {
 });
 
 app.get("/api/apps/:id", (req, res) => {
-  const row = db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id);
+  const row = db
+    .prepare("SELECT id, name, description, tags, code, created_at, updated_at FROM apps WHERE id = ?")
+    .get(req.params.id);
   if (!row) throw httpError(404, "App not found");
   res.json(row);
 });

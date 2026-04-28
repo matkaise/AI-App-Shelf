@@ -1,4 +1,5 @@
 const { spawn } = require("child_process");
+const { once } = require("events");
 const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
@@ -13,10 +14,11 @@ function expect(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function startServer(env) {
+async function startServer(env, options = {}) {
   const port = await getFreePort();
   const dataDir = path.join(root, `.test-data-${port}`);
   fs.rmSync(dataDir, { recursive: true, force: true });
+  if (options.beforeStart) await options.beforeStart(dataDir);
 
   const child = spawn(process.execPath, ["server.js"], {
     cwd: root,
@@ -46,8 +48,10 @@ async function startServer(env) {
 }
 
 async function stopServer(server) {
-  server.child.kill();
-  await sleep(200);
+  if (server.child.exitCode === null) {
+    server.child.kill();
+    await Promise.race([once(server.child, "exit"), sleep(5000)]);
+  }
   fs.rmSync(server.dataDir, { recursive: true, force: true });
 }
 
@@ -75,7 +79,8 @@ function authHeader(username, password) {
 }
 
 function testRendererWarnings() {
-  const renderer = require(path.join(root, "public", "render.js"));
+  const rendererPath = path.join(root, "public", "render.js");
+  const renderer = require(rendererPath);
   const rendered = renderer.renderRunnableApp(`import { Star } from "lucide-react";
 
 export default function App() {
@@ -85,11 +90,15 @@ export default function App() {
   expect(rendered.type === "react", "renderer should detect React snippets");
   expect(rendered.warnings.some((warning) => warning.includes("Unsupported import removed")), "unsupported imports should be reported");
   expect(rendered.html.includes("Unsupported import removed by AI App Shelf"), "rendered HTML should include a removed import comment");
+  delete globalThis.AppShelfRenderer;
 }
 
 async function testFailClosed() {
   const server = await startServer({ APP_PASSWORD: "", ALLOW_UNAUTHENTICATED: "" });
   try {
+    const health = await fetch(`${server.base}/health`);
+    expect(health.ok, `expected health to stay open, got ${health.status}`);
+
     const response = await fetch(`${server.base}/`);
     expect(response.status === 503, `expected fail-closed 503, got ${response.status}`);
   } finally {
@@ -100,8 +109,13 @@ async function testFailClosed() {
 async function testAppFlow() {
   const server = await startServer({ ALLOW_UNAUTHENTICATED: "true", APP_PASSWORD: "", APP_SECRET: "test-secret" });
   try {
-    const html = await fetch(`${server.base}/`).then((res) => res.text());
+    const indexResponse = await fetch(`${server.base}/`);
+    const html = await indexResponse.text();
     expect(html.includes("/render.js"), "index should load shared renderer");
+    expect(
+      indexResponse.headers.get("content-security-policy").includes("frame-ancestors 'none'"),
+      "index should block framing"
+    );
 
     const blocked = await fetch(`${server.base}/api/apps`, {
       method: "POST",
@@ -124,8 +138,13 @@ export default function App() {
     expect(createResponse.status === 201, `create failed: ${createResponse.status}`);
     expect(app.thumbnail.startsWith("data:image/svg+xml;base64,"), "created app should include a static thumbnail");
 
+    const detail = await fetch(`${server.base}/api/apps/${app.id}`).then((res) => res.json());
+    expect(detail.code.includes("useState"), "app detail should include code for editing");
+    expect(!Object.hasOwn(detail, "thumbnail"), "app detail should omit thumbnail payload");
+
     const run = await fetch(`${server.base}/run/${app.id}`);
     expect(run.headers.get("x-app-shelf-source-type") === "react", "react source type not detected");
+    expect(!run.headers.get("content-security-policy").includes("frame-ancestors"), "run CSP should remain embeddable");
     const rendered = await run.text();
     expect(rendered.includes("react.production.min.js"), "react runtime missing");
     expect(!rendered.includes("import React"), "react import was not stripped");
@@ -142,8 +161,10 @@ export default function App() {
 
     const db = new Database(path.join(server.dataDir, "apps.db"), { readonly: true });
     const stored = db.prepare("SELECT value FROM settings WHERE key = ?").get("githubToken").value;
+    const salt = db.prepare("SELECT value FROM settings WHERE key = ?").get("secretSalt").value;
     db.close();
-    expect(stored.startsWith("enc:v1:"), "stored GitHub token should be encrypted");
+    expect(stored.startsWith("enc:v2:"), "stored GitHub token should use scrypt-backed v2 encryption");
+    expect(Boolean(salt), "secret salt should be stored with the database");
     expect(!stored.includes("ghp_secret_for_test"), "stored GitHub token leaked plaintext");
   } finally {
     await stopServer(server);
@@ -164,6 +185,37 @@ async function testTokenRequiresSecret() {
   }
 }
 
+async function testTokenMigratesAtBootOnly() {
+  const server = await startServer(
+    { ALLOW_UNAUTHENTICATED: "true", APP_PASSWORD: "", APP_SECRET: "migration-secret" },
+    {
+      beforeStart(dataDir) {
+        fs.mkdirSync(dataDir, { recursive: true });
+        const db = new Database(path.join(dataDir, "apps.db"));
+        db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)");
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("githubToken", "ghp_plaintext_migration");
+        db.close();
+      },
+    }
+  );
+
+  try {
+    const db = new Database(path.join(server.dataDir, "apps.db"));
+    const migrated = db.prepare("SELECT value FROM settings WHERE key = ?").get("githubToken").value;
+    expect(migrated.startsWith("enc:v2:"), "plaintext token should migrate to v2 on boot");
+    expect(!migrated.includes("ghp_plaintext_migration"), "migrated token leaked plaintext");
+
+    const settings = await fetch(`${server.base}/api/settings`).then((res) => res.json());
+    expect(settings.githubTokenStorage === "encrypted", "settings should report encrypted token storage");
+
+    const afterRead = db.prepare("SELECT value FROM settings WHERE key = ?").get("githubToken").value;
+    db.close();
+    expect(afterRead === migrated, "GET /api/settings should not rewrite migrated token");
+  } finally {
+    await stopServer(server);
+  }
+}
+
 async function testBasicAuth() {
   const server = await startServer({ APP_USERNAME: "admin", APP_PASSWORD: "secret" });
   try {
@@ -179,12 +231,33 @@ async function testBasicAuth() {
   }
 }
 
+async function testBasicAuthRateLimit() {
+  const server = await startServer({ APP_USERNAME: "admin", APP_PASSWORD: "secret" });
+  try {
+    for (let i = 0; i < 30; i++) {
+      const denied = await fetch(`${server.base}/api/apps`, {
+        headers: { Authorization: authHeader("admin", "wrong") },
+      });
+      expect(denied.status === 401, `expected 401 before rate limit, got ${denied.status}`);
+    }
+
+    const limited = await fetch(`${server.base}/api/apps`, {
+      headers: { Authorization: authHeader("admin", "wrong") },
+    });
+    expect(limited.status === 429, `expected 429 after repeated auth failures, got ${limited.status}`);
+  } finally {
+    await stopServer(server);
+  }
+}
+
 (async () => {
   testRendererWarnings();
   await testFailClosed();
   await testAppFlow();
   await testTokenRequiresSecret();
+  await testTokenMigratesAtBootOnly();
   await testBasicAuth();
+  await testBasicAuthRateLimit();
   console.log("smoke tests passed");
 })().catch((err) => {
   console.error(err);

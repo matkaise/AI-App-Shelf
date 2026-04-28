@@ -25,7 +25,7 @@ PUID=1000
 PGID=1000
 ```
 
-`APP_SECRET` wird verwendet, um in der Oberfläche gespeicherte GitHub-Tokens verschlüsselt in SQLite abzulegen. Auf einem NAS kannst du `PUID` und `PGID` auf die UID/GID deines NAS-Benutzers setzen, damit `./data` beschreibbar bleibt.
+`APP_SECRET` wird verwendet, um in der Oberfläche gespeicherte GitHub-Tokens verschlüsselt in SQLite abzulegen. Verwende dafür einen langen zufälligen Wert, nicht dein NAS-Passwort. Auf einem NAS kannst du `PUID` und `PGID` auf die UID/GID deines NAS-Benutzers setzen; `./data` muss auf dem Host für diese UID/GID beschreibbar sein.
 
 Speichere dann diese `docker-compose.yml`:
 
@@ -91,9 +91,11 @@ environment:
 
 Wenn `GITHUB_TOKEN` gesetzt ist, wird dieser Token bevorzugt verwendet und nicht an die Oberfläche zurückgegeben.
 
-Wenn du den Token in der Oberfläche einträgst, wird er mit `APP_SECRET` verschlüsselt in SQLite gespeichert. Ohne `APP_SECRET` lehnt die App das Speichern eines Tokens ab. Behandle `./data/apps.db`, deinen `APP_SECRET` und Backups davon trotzdem wie Geheimnisse.
+Wenn du den Token in der Oberfläche einträgst, wird er mit `APP_SECRET` verschlüsselt in SQLite gespeichert. Der Schlüssel wird per `scrypt` mit einer in der Datenbank gespeicherten Salt abgeleitet. Ohne `APP_SECRET` lehnt die App das Speichern eines Tokens ab. Behandle `./data/apps.db`, deinen `APP_SECRET` und Backups davon trotzdem wie Geheimnisse.
 
-Alte Klartext-Tokens werden beim nächsten Zugriff automatisch verschlüsselt, sobald `APP_SECRET` gesetzt ist. Wenn du bewusst weiter Klartext erlauben willst, geht das nur explizit mit `ALLOW_PLAINTEXT_SECRETS=true`.
+Alte Klartext-Tokens werden beim Start automatisch verschlüsselt, sobald `APP_SECRET` gesetzt ist. Wenn du bewusst weiter Klartext erlauben willst, geht das nur explizit mit `ALLOW_PLAINTEXT_SECRETS=true`.
+
+Beim Pull-Sync werden Apps aktuell über ihren Namen wiedererkannt. Wenn du eine App lokal umbenennst und dann pullst, kann dieselbe App deshalb als neue App angelegt werden.
 
 ## Sicherheit
 
@@ -105,7 +107,7 @@ ALLOW_UNAUTHENTICATED=true npm start
 
 Für NAS- oder Reverse-Proxy-Betrieb sollte immer `APP_PASSWORD` gesetzt sein.
 
-Gespeicherte HTML-Apps werden mit Browser-Sandbox und Content-Security-Policy ausgeliefert. Zusätzlich müssen schreibende API-Requests einen internen Header senden. Dieser Header ist keine Authentifizierung, erzwingt im Browser aber einen CORS-Preflight und blockiert einfache Cross-Site-Formular-/Script-Requests.
+Gespeicherte HTML-Apps werden mit Browser-Sandbox und Content-Security-Policy ausgeliefert. Die Hauptoberfläche blockiert Framing, und Basic-Auth-Fehlversuche werden einfach pro IP begrenzt. Zusätzlich müssen schreibende API-Requests einen internen Header senden. Dieser Header ist keine Authentifizierung, erzwingt im Browser aber einen CORS-Preflight und blockiert einfache Cross-Site-Formular-/Script-Requests.
 
 ## React-Code aus Canvas
 

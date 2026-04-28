@@ -298,6 +298,16 @@ label textarea {
   object-fit: cover;
 }
 
+.card-preview-placeholder {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: #0b766d;
+  background: linear-gradient(135deg, #f7faf8, #e8f2ef);
+  font-size: 38px;
+  font-weight: 850;
+}
+
 .card-body {
   display: grid;
   grid-template-rows: auto minmax(40px, 1fr) auto;
