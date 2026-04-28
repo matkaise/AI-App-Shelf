@@ -123,11 +123,6 @@ function buildUI() {
   );
   document.getElementById('settingsForm').addEventListener('submit', saveSettings);
 
-  let resizeRaf;
-  window.addEventListener('resize', () => {
-    cancelAnimationFrame(resizeRaf);
-    resizeRaf = requestAnimationFrame(updateThumbScales);
-  });
 }
 
 // ── Page render (header + grid) ────────────────────────────────────────────
@@ -197,18 +192,6 @@ function renderPage() {
   addTile.addEventListener('click', openAddFlow);
   grid.append(addTile);
 
-  requestAnimationFrame(updateThumbScales);
-}
-
-function updateThumbScales() {
-  document.querySelectorAll('.card-thumb').forEach(thumb => {
-    const iframe = thumb.querySelector('iframe');
-    if (!iframe) return;
-    const w = thumb.clientWidth;
-    if (!w) return;
-    const scale = w / 960;
-    iframe.style.transform = `scale(${scale})`;
-  });
 }
 
 // ── Card builder ───────────────────────────────────────────────────────────
@@ -218,15 +201,7 @@ function buildCard(app) {
 
   const thumb = el('div', 'card-thumb');
 
-  if (app.id) {
-    const iframe = document.createElement('iframe');
-    iframe.sandbox = 'allow-scripts';
-    iframe.title = app.name;
-    iframe.loading = 'lazy';
-    iframe.style.cssText = 'position:absolute;top:0;left:0;width:960px;height:600px;border:none;transform-origin:0 0;pointer-events:none;background:#fff;';
-    iframe.src = `/run/${app.id}`;
-    thumb.append(iframe);
-  } else if (app.thumbnail) {
+  if (app.thumbnail) {
     const img = document.createElement('img');
     img.src = app.thumbnail;
     img.alt = '';
@@ -597,11 +572,11 @@ async function doSaveApp() {
 }
 
 function saveMessage(app) {
-  if (!app) return 'Saved.';
-  if (app.build_status === 'ready') return 'Saved. Bundle ready.';
-  if (app.build_status === 'error') return 'Saved. Bundle failed, browser fallback active.';
-  if (app.build_status === 'fallback') return 'Saved. Browser fallback active.';
-  return 'Saved.';
+  if (!app) return 'Gespeichert.';
+  if (app.build_status === 'ready') return 'Gespeichert. Bundle bereit.';
+  if (app.build_status === 'error') return 'Gespeichert. Browser-Fallback aktiv.';
+  if (app.build_status === 'fallback') return 'Gespeichert. Browser-Fallback aktiv.';
+  return 'Gespeichert.';
 }
 
 function closeUploadFlow() {
@@ -625,8 +600,8 @@ function openConfirm(app) {
     <p class="confirm-title">Delete "${escHtml(app.name)}"?</p>
     <p class="confirm-body">This removes the app and its HTML from the shelf. You can't undo this.</p>
     <div class="confirm-actions">
-      <button class="confirm-cancel-btn" id="confirmCancelBtn">Cancel</button>
-      <button class="confirm-delete-btn" id="confirmDeleteBtn">Delete app</button>
+      <button class="confirm-cancel-btn" id="confirmCancelBtn">Abbrechen</button>
+      <button class="confirm-delete-btn" id="confirmDeleteBtn">App löschen</button>
     </div>
   `;
   backdrop.append(box);
@@ -708,7 +683,7 @@ async function toggleStar(id, btn) {
 async function deleteApp(id) {
   try {
     await api(`/api/apps/${id}`, { method: 'DELETE' });
-    showToast('Deleted.');
+    showToast('Gelöscht.');
     await loadApps();
   } catch (err) {
     showToast(err.message, true);

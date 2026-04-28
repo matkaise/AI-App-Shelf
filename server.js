@@ -11,7 +11,6 @@ const app = express();
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const DATA_DIR = process.env.DATA_DIR || "./data";
-const BUILD_DIR = process.env.BUILD_DIR || path.join(DATA_DIR, "build-cache");
 const APP_USERNAME = process.env.APP_USERNAME || "admin";
 const APP_PASSWORD = process.env.APP_PASSWORD || "";
 const ALLOW_UNAUTHENTICATED = process.env.ALLOW_UNAUTHENTICATED === "true";
@@ -23,6 +22,7 @@ const JSON_LIMIT = process.env.JSON_LIMIT || "15mb";
 const MAX_CODE_BYTES = Number.parseInt(process.env.MAX_CODE_BYTES || `${1024 * 1024 * 5}`, 10);
 const ENABLE_BUNDLER = process.env.ENABLE_BUNDLER !== "false";
 const BUNDLE_FETCH_TIMEOUT_MS = Number.parseInt(process.env.BUNDLE_FETCH_TIMEOUT_MS || "20000", 10) || 20000;
+const BUNDLE_CDN_HOST = "esm.sh";
 const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_RATE_LIMIT_MAX = 30;
 const AUTH_RATE_LIMIT_MAX_BUCKETS = Math.max(
@@ -35,7 +35,6 @@ let cachedSecretKeySalt = "";
 let cachedSecretKey = null;
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(BUILD_DIR)) fs.mkdirSync(BUILD_DIR, { recursive: true });
 
 const db = new Database(path.join(DATA_DIR, "apps.db"));
 db.pragma("journal_mode = WAL");
@@ -51,7 +50,6 @@ db.exec(`
     code TEXT NOT NULL,
     thumbnail TEXT DEFAULT '',
     starred INTEGER DEFAULT 0,
-    run_mode TEXT DEFAULT 'auto',
     bundle_hash TEXT DEFAULT '',
     bundle_js TEXT DEFAULT '',
     bundle_css TEXT DEFAULT '',
@@ -74,7 +72,6 @@ db.exec(`
 
 ensureColumn("apps", "thumbnail", "TEXT DEFAULT ''");
 ensureColumn("apps", "starred", "INTEGER DEFAULT 0");
-ensureColumn("apps", "run_mode", "TEXT DEFAULT 'auto'");
 ensureColumn("apps", "bundle_hash", "TEXT DEFAULT ''");
 ensureColumn("apps", "bundle_js", "TEXT DEFAULT ''");
 ensureColumn("apps", "bundle_css", "TEXT DEFAULT ''");
@@ -476,7 +473,6 @@ function publicAppFields() {
     "thumbnail",
     "code",
     "starred",
-    "run_mode",
     "build_status",
     "build_error",
     "build_dependencies",
@@ -494,7 +490,6 @@ function detailAppFields() {
     "tags",
     "code",
     "starred",
-    "run_mode",
     "build_status",
     "build_error",
     "build_dependencies",
@@ -502,6 +497,29 @@ function detailAppFields() {
     "created_at",
     "updated_at",
   ].join(", ");
+}
+
+function appResponse(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    build_dependencies: parseJsonArray(row.build_dependencies),
+  };
+}
+
+function appsResponse(rows) {
+  return rows.map(appResponse);
+}
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 async function rebuildAppBundle(id) {
@@ -529,7 +547,7 @@ async function rebuildAppBundle(id) {
     id
   );
 
-  return db.prepare(`SELECT ${detailAppFields()} FROM apps WHERE id = ?`).get(id);
+  return appResponse(db.prepare(`SELECT ${detailAppFields()} FROM apps WHERE id = ?`).get(id));
 }
 
 async function buildBundle(code) {
@@ -574,7 +592,7 @@ async function buildBundle(code) {
   }
 
   try {
-    const built = await bundleReactApp(code, hash);
+    const built = await bundleReactApp(code);
     return {
       hash,
       js: built.js,
@@ -595,28 +613,10 @@ async function buildBundle(code) {
   }
 }
 
-async function bundleReactApp(code, hash) {
-  const buildRoot = path.join(BUILD_DIR, hash);
-  const srcDir = path.join(buildRoot, "src");
-  fs.mkdirSync(srcDir, { recursive: true });
-
-  const appPath = path.join(srcDir, "App.jsx");
-  const entryPath = path.join(srcDir, "main.jsx");
-  fs.writeFileSync(appPath, code, "utf8");
-  fs.writeFileSync(
-    entryPath,
-    `import React from "react";
-import { createRoot } from "react-dom/client";
-import App from "./App.jsx";
-
-createRoot(document.getElementById("root")).render(React.createElement(App));
-`,
-    "utf8"
-  );
-
+async function bundleReactApp(code) {
   const result = await esbuild.build({
-    absWorkingDir: buildRoot,
-    entryPoints: [entryPath],
+    absWorkingDir: __dirname,
+    entryPoints: ["app-shelf:entry"],
     bundle: true,
     write: false,
     format: "iife",
@@ -630,7 +630,7 @@ createRoot(document.getElementById("root")).render(React.createElement(App));
       ".tsx": "tsx",
       ".css": "css",
     },
-    plugins: [appShelfNpmPlugin()],
+    plugins: [appShelfSourcePlugin(code), appShelfNpmPlugin()],
     logLevel: "silent",
   });
 
@@ -644,6 +644,42 @@ createRoot(document.getElementById("root")).render(React.createElement(App));
   return { js, css };
 }
 
+function appShelfSourcePlugin(code) {
+  return {
+    name: "app-shelf-source",
+    setup(build) {
+      build.onResolve({ filter: /^app-shelf:entry$/ }, () => ({
+        path: "entry.jsx",
+        namespace: "app-shelf-source",
+      }));
+
+      build.onResolve({ filter: /^\.\/App\.jsx$/, namespace: "app-shelf-source" }, () => ({
+        path: "App.jsx",
+        namespace: "app-shelf-source",
+      }));
+
+      build.onResolve({ filter: /^\./, namespace: "app-shelf-source" }, () => ({
+        errors: [{ text: "Local file imports are not supported by the Bundler MVP." }],
+      }));
+
+      build.onLoad({ filter: /^entry\.jsx$/, namespace: "app-shelf-source" }, () => ({
+        loader: "jsx",
+        contents: `import React from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App.jsx";
+
+createRoot(document.getElementById("root")).render(React.createElement(App));
+`,
+      }));
+
+      build.onLoad({ filter: /^App\.jsx$/, namespace: "app-shelf-source" }, () => ({
+        loader: "jsx",
+        contents: code || "",
+      }));
+    },
+  };
+}
+
 function appShelfNpmPlugin() {
   return {
     name: "app-shelf-npm",
@@ -654,18 +690,23 @@ function appShelfNpmPlugin() {
       build.onResolve({ filter: /^react-dom\/client$/ }, () => ({ path: "react-dom-client", namespace: "app-shelf-react" }));
       build.onResolve({ filter: /^react-dom$/ }, () => ({ path: "react-dom-client", namespace: "app-shelf-react" }));
 
-      build.onResolve({ filter: /^https?:\/\// }, (args) => ({ path: args.path, namespace: "http-url" }));
+      build.onResolve({ filter: /^https?:\/\// }, (args) => {
+        if (args.namespace === "http-url") return resolveAllowedHttpUrl(args.path);
+        return {
+          errors: [{ text: "Direct URL imports are not allowed. Use a bare npm package import instead." }],
+        };
+      });
       build.onResolve({ filter: /.*/, namespace: "http-url" }, (args) => {
-        if (args.path.startsWith("/")) return { path: `https://esm.sh${args.path}`, namespace: "http-url" };
-        if (/^https?:\/\//.test(args.path)) return { path: args.path, namespace: "http-url" };
+        if (args.path.startsWith("/")) return resolveAllowedHttpUrl(`https://${BUNDLE_CDN_HOST}${args.path}`);
+        if (/^https?:\/\//.test(args.path)) return resolveAllowedHttpUrl(args.path);
         if (args.path.startsWith(".") || args.path.startsWith("/")) {
-          return { path: new URL(args.path, args.importer).toString(), namespace: "http-url" };
+          return resolveAllowedHttpUrl(new URL(args.path, args.importer).toString());
         }
-        return { path: npmToEsmUrl(args.path), namespace: "http-url" };
+        return resolveNpmImport(args.path);
       });
 
       build.onResolve({ filter: /^[^./@][^:]*$|^@[^/]+\/[^/]+/ }, (args) => {
-        if (args.resolveDir || args.namespace === "file") return { path: npmToEsmUrl(args.path), namespace: "http-url" };
+        if (args.namespace !== "http-url") return resolveNpmImport(args.path);
         return null;
       });
 
@@ -739,20 +780,63 @@ export const useTransition = React.useTransition;`,
   };
 }
 
+function resolveNpmImport(specifier) {
+  try {
+    return { path: npmToEsmUrl(specifier), namespace: "http-url" };
+  } catch (err) {
+    return { errors: [{ text: err.message }] };
+  }
+}
+
+function resolveAllowedHttpUrl(value) {
+  try {
+    return { path: normalizeAllowedBundleUrl(value), namespace: "http-url" };
+  } catch (err) {
+    return { errors: [{ text: err.message }] };
+  }
+}
+
 function npmToEsmUrl(specifier) {
-  return `https://esm.sh/${specifier}?bundle&external=react,react-dom`;
+  const clean = String(specifier || "").trim();
+  const validSpecifier = /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+(?:@[a-z0-9._+~-]+)?(?:\/[a-z0-9._~!$&'()*+,;=:@%-]+)*$/i;
+  if (!validSpecifier.test(clean)) throw new Error(`Unsupported npm import specifier: ${clean || "(empty)"}`);
+  const encoded = clean.split("/").map((part) => encodeURIComponent(part)).join("/");
+  return `https://${BUNDLE_CDN_HOST}/${encoded}?bundle&external=react,react-dom`;
 }
 
 async function fetchWithTimeout(url) {
+  const safeUrl = normalizeAllowedBundleUrl(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), BUNDLE_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) throw new Error(`Could not fetch ${url}: ${response.status}`);
+    const response = await fetch(safeUrl, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Could not fetch ${safeUrl}: ${response.status}`);
     return response;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function normalizeAllowedBundleUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || ""));
+  } catch {
+    throw new Error("Bundler rejected an invalid dependency URL.");
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new Error("Bundler dependency fetches must use HTTPS.");
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname !== BUNDLE_CDN_HOST && !hostname.endsWith(`.${BUNDLE_CDN_HOST}`)) {
+    throw new Error(`Bundler dependency fetches are restricted to ${BUNDLE_CDN_HOST}.`);
+  }
+
+  parsed.username = "";
+  parsed.password = "";
+  return parsed.toString();
 }
 
 function extractBarePackageImports(code) {
@@ -1053,7 +1137,7 @@ app.get("/api/apps", (req, res) => {
         )
         .all(limit, offset);
 
-  res.json(rows);
+  res.json(appsResponse(rows));
 });
 
 app.get("/api/apps/:id", (req, res) => {
@@ -1061,7 +1145,7 @@ app.get("/api/apps/:id", (req, res) => {
     .prepare(`SELECT ${detailAppFields()} FROM apps WHERE id = ?`)
     .get(req.params.id);
   if (!row) throw httpError(404, "App not found");
-  res.json(row);
+  res.json(appResponse(row));
 });
 
 app.post(
@@ -1075,7 +1159,7 @@ app.post(
       .run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred);
 
     const saved = await rebuildAppBundle(result.lastInsertRowid);
-    res.status(201).json(db.prepare(`SELECT ${publicAppFields()} FROM apps WHERE id = ?`).get(saved.id));
+    res.status(201).json(appResponse(db.prepare(`SELECT ${publicAppFields()} FROM apps WHERE id = ?`).get(saved.id)));
   })
 );
 
@@ -1093,7 +1177,7 @@ app.put(
     ).run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred, req.params.id);
 
     const saved = await rebuildAppBundle(req.params.id);
-    res.json(db.prepare(`SELECT ${publicAppFields()} FROM apps WHERE id = ?`).get(saved.id));
+    res.json(appResponse(db.prepare(`SELECT ${publicAppFields()} FROM apps WHERE id = ?`).get(saved.id)));
   })
 );
 
@@ -1218,7 +1302,9 @@ app.post(
     const cfg = getGithubConfig();
     if (!cfg.token || !cfg.repo) throw httpError(400, "GitHub is not configured");
 
-    const allApps = db.prepare("SELECT * FROM apps ORDER BY id").all();
+    const allApps = db
+      .prepare("SELECT id, name, description, tags, code, starred, created_at, updated_at FROM apps ORDER BY id")
+      .all();
     const content = Buffer.from(JSON.stringify(allApps, null, 2)).toString("base64");
     const contentPath = encodeContentPath(cfg.file);
 

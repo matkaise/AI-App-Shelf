@@ -128,7 +128,7 @@ AI App Shelf erkennt solche Snippets automatisch. Beim Speichern versucht der Se
 
 Wenn der Bundle-Build erfolgreich ist, nutzt `/run/:id` das gespeicherte Bundle. Wenn der Build fehlschlägt, deaktiviert ist oder die App keinen Default-Export hat, fällt AI App Shelf auf den Browser-Renderer mit React, Babel und Tailwind im Sandbox-Frame zurück.
 
-Das Bundler-MVP unterstützt Single-File-React-Apps mit öffentlichen Browser-tauglichen npm-Paketen. Lokale Projekt-Imports wie `@/components/ui/button`, Node-only-Pakete, native Addons und Multi-File-Projekte werden nicht automatisch aufgelöst.
+Das Bundler-MVP unterstützt Single-File-React-Apps mit öffentlichen Browser-tauglichen npm-Paketen. Direkte URL-Imports wie `import "https://..."` werden aus Sicherheitsgründen blockiert; npm-Pakete laufen nur über die kontrollierte `esm.sh`-Route. Lokale Projekt-Imports wie `@/components/ui/button`, Node-only-Pakete, native Addons und Multi-File-Projekte werden nicht automatisch aufgelöst.
 
 Du kannst den Bundler bei Bedarf deaktivieren:
 
@@ -141,6 +141,13 @@ ENABLE_BUNDLER=false npm start
 ```bash
 npm install
 npm run check
+npm test
+```
+
+Der normale Smoke-Test bleibt offline-stabil. Einen zusätzlichen Online-Test mit echtem npm-Import über `esm.sh` kannst du separat ausführen:
+
+```bash
+npm run test:online
 ```
 
 PowerShell:

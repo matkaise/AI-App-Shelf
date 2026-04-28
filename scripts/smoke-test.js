@@ -3,6 +3,7 @@ const { once } = require("events");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const http = require("http");
 const Database = require("better-sqlite3");
 
 const root = path.resolve(__dirname, "..");
@@ -165,10 +166,12 @@ export default function App() {
     expect(createResponse.status === 201, `create failed: ${createResponse.status}`);
     expect(app.thumbnail.startsWith("data:image/svg+xml;base64,"), "created app should include a static thumbnail");
     expect(app.build_status === "ready", `react app should build a bundle, got ${app.build_status}: ${app.build_error || ""}`);
+    expect(Array.isArray(app.build_dependencies), "build_dependencies should be returned as an array");
 
     const detail = await fetch(`${server.base}/api/apps/${app.id}`).then((res) => res.json());
     expect(detail.code.includes("useState"), "app detail should include code for editing");
     expect(!Object.hasOwn(detail, "thumbnail"), "app detail should omit thumbnail payload");
+    expect(Array.isArray(detail.build_dependencies), "detail build_dependencies should be returned as an array");
 
     const run = await fetch(`${server.base}/run/${app.id}`);
     expect(run.headers.get("x-app-shelf-source-type") === "bundle", "bundle source type not detected");
@@ -176,27 +179,6 @@ export default function App() {
     const rendered = await run.text();
     expect(rendered.includes("AI App Shelf Bundle"), "bundled document missing");
     expect(!rendered.includes("import React"), "react import was not stripped");
-
-    const dependencyCode = `import React from "react";
-import { format } from "date-fns";
-
-export default function App() {
-  return <div>{format(new Date(0), "yyyy")}</div>;
-}`;
-    const { response: dependencyCreateResponse, body: dependencyApp } = await requestJson(`${server.base}/api/apps`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-App-Shelf-Request": "1" },
-      body: JSON.stringify({ name: "Bundled Dependency", tags: "bundle", code: dependencyCode }),
-    });
-    expect(dependencyCreateResponse.status === 201, `dependency app create failed: ${dependencyCreateResponse.status}`);
-    expect(
-      dependencyApp.build_status === "ready",
-      `dependency app should bundle, got ${dependencyApp.build_status}: ${dependencyApp.build_error || ""}`
-    );
-    expect(dependencyApp.build_dependencies.includes("date-fns"), "dependency list should include date-fns");
-
-    const dependencyRun = await fetch(`${server.base}/run/${dependencyApp.id}`);
-    expect(dependencyRun.headers.get("x-app-shelf-source-type") === "bundle", "dependency bundle source type not detected");
 
     const settings = await fetch(`${server.base}/api/settings`).then((res) => res.json());
     expect(!Object.hasOwn(settings, "githubToken"), "settings leaked githubToken");
@@ -221,6 +203,79 @@ export default function App() {
   } finally {
     if (stoppedForDbRead) fs.rmSync(server.dataDir, { recursive: true, force: true });
     else await stopServer(server);
+  }
+}
+
+function startProbeServer() {
+  let hits = 0;
+  const server = http.createServer((req, res) => {
+    hits++;
+    res.writeHead(200, { "Content-Type": "application/javascript" });
+    res.end("export default 1;");
+  });
+
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      resolve({
+        url: `http://127.0.0.1:${port}/module.js`,
+        hits: () => hits,
+        close: () => new Promise((done) => server.close(done)),
+      });
+    });
+  });
+}
+
+async function testBundlerRejectsDirectUrl() {
+  const probe = await startProbeServer();
+  const server = await startServer({ ALLOW_UNAUTHENTICATED: "true", APP_PASSWORD: "", APP_SECRET: "test-secret" });
+  try {
+    const code = `import React from "react";
+import "${probe.url}";
+
+export default function App() {
+  return <div>blocked</div>;
+}`;
+    const { response, body } = await requestJson(`${server.base}/api/apps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App-Shelf-Request": "1" },
+      body: JSON.stringify({ name: "Blocked URL Import", tags: "security", code }),
+    });
+
+    expect(response.status === 201, `direct URL import app create failed: ${response.status}`);
+    expect(body.build_status === "error", `expected direct URL import to fail bundle, got ${body.build_status}`);
+    expect(body.build_error.includes("Direct URL imports are not allowed"), "direct URL import should be rejected clearly");
+    expect(probe.hits() === 0, `direct URL import should not be fetched, got ${probe.hits()} hits`);
+  } finally {
+    await stopServer(server);
+    await probe.close();
+  }
+}
+
+async function testOnlineDependencyBundle() {
+  const server = await startServer({ ALLOW_UNAUTHENTICATED: "true", APP_PASSWORD: "", APP_SECRET: "test-secret" });
+  try {
+    const dependencyCode = `import React from "react";
+import { format } from "date-fns";
+
+export default function App() {
+  return <div>{format(new Date(0), "yyyy")}</div>;
+}`;
+    const { response, body } = await requestJson(`${server.base}/api/apps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App-Shelf-Request": "1" },
+      body: JSON.stringify({ name: "Bundled Dependency", tags: "bundle", code: dependencyCode }),
+    });
+
+    expect(response.status === 201, `dependency app create failed: ${response.status}`);
+    expect(body.build_status === "ready", `dependency app should bundle, got ${body.build_status}: ${body.build_error || ""}`);
+    expect(body.build_dependencies.includes("date-fns"), "dependency list should include date-fns");
+
+    const dependencyRun = await fetch(`${server.base}/run/${body.id}`);
+    expect(dependencyRun.headers.get("x-app-shelf-source-type") === "bundle", "dependency bundle source type not detected");
+  } finally {
+    await stopServer(server);
   }
 }
 
@@ -410,6 +465,8 @@ async function testTrustProxyRateLimitIsolation() {
   testRendererImports();
   await testFailClosed();
   await testAppFlow();
+  await testBundlerRejectsDirectUrl();
+  if (process.argv.includes("--online")) await testOnlineDependencyBundle();
   await testTokenRequiresSecret();
   await testPlaintextTokenIsReported();
   await testTokenMigratesAtBootOnly();

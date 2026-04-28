@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check public/app.js && node --check public/render.js && node --check scripts/smoke-test.js",
-    "test": "node scripts/smoke-test.js"
+    "test": "node scripts/smoke-test.js",
+    "test:online": "node scripts/smoke-test.js --online"
   },
   "engines": {
     "node": ">=20"
