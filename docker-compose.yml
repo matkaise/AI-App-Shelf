@@ -1,0 +1,23 @@
+services:
+  ai-app-shelf:
+    image: ghcr.io/matkaise/ai-app-shelf:latest
+    container_name: ai-app-shelf
+    restart: unless-stopped
+    ports:
+      - "3456:3000"
+    volumes:
+      - ./data:/data
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      DATA_DIR: /data
+      PORT: 3000
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env before starting AI App Shelf}
+      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env before starting AI App Shelf}
+      # TRUST_PROXY: "1"
+      # ALLOW_UNAUTHENTICATED: "true"
+      # GITHUB_TOKEN: ghp_xxx
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

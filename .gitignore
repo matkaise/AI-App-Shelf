@@ -1,0 +1,7 @@
+node_modules/
+data/
+.claude/
+*.db
+.env
+.env.*
+.test-data-*/
