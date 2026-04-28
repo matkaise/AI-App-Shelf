@@ -26,7 +26,7 @@
       </div>
     </header>
 
-    <main class="workspace">
+    <main class="dashboard">
       <section class="library" aria-label="App-Bibliothek">
         <div class="library-toolbar">
           <label class="search-field">
@@ -43,63 +43,75 @@
 
         <div id="appGrid" class="app-grid" aria-live="polite"></div>
       </section>
-
-      <aside id="editorPanel" class="editor-panel" aria-label="App-Editor">
-        <form id="appForm" class="editor-form">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow" id="editorMode">Neue App</p>
-              <h2 id="editorTitle">HTML oder React einfügen</h2>
-            </div>
-            <button id="closeEditorBtn" class="compact mobile-only" type="button">Schließen</button>
-          </div>
-
-          <label>
-            <span>Name</span>
-            <input id="nameInput" name="name" required maxlength="120" autocomplete="off" />
-          </label>
-
-          <label>
-            <span>Beschreibung</span>
-            <textarea id="descriptionInput" name="description" rows="3" maxlength="1000"></textarea>
-          </label>
-
-          <label>
-            <span>Tags</span>
-            <input id="tagsInput" name="tags" maxlength="300" placeholder="Tools, Spiele, Rechner" autocomplete="off" />
-          </label>
-
-          <label class="code-field">
-            <span>HTML / React JSX</span>
-            <textarea id="codeInput" name="code" spellcheck="false" required placeholder="Fertiges HTML oder React-Code aus ChatGPT Canvas"></textarea>
-          </label>
-
-          <div class="editor-actions">
-            <button id="saveBtn" class="primary" type="submit">Speichern</button>
-            <button id="duplicateBtn" class="ghost" type="button" disabled>Duplizieren</button>
-            <button id="openBtn" class="ghost" type="button" disabled>Öffnen</button>
-            <button id="deleteBtn" class="danger" type="button" disabled>Löschen</button>
-          </div>
-        </form>
-
-        <section class="preview-panel" aria-label="Vorschau">
-          <div class="preview-head">
-            <h3>Vorschau</h3>
-            <span id="previewState">Entwurf</span>
-          </div>
-          <iframe id="previewFrame" title="App-Vorschau" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock" referrerpolicy="no-referrer"></iframe>
-        </section>
-      </aside>
     </main>
 
+    <dialog id="appDialog" class="app-dialog">
+      <form id="appForm" class="app-modal">
+        <header class="modal-head">
+          <div class="modal-title">
+            <p class="eyebrow" id="editorMode">Neue App</p>
+            <h2 id="editorTitle">HTML oder React einfügen</h2>
+          </div>
+          <div class="modal-head-actions">
+            <button id="openBtn" class="ghost" type="button" disabled>Öffnen</button>
+            <button id="closeAppDialogBtn" class="icon-button" type="button" aria-label="Schließen">×</button>
+          </div>
+        </header>
+
+        <div class="modal-body">
+          <section class="editor-pane" aria-label="App-Daten">
+            <div class="field-grid">
+              <label>
+                <span>Name</span>
+                <input id="nameInput" name="name" required maxlength="120" autocomplete="off" />
+              </label>
+
+              <label>
+                <span>Tags</span>
+                <input id="tagsInput" name="tags" maxlength="300" placeholder="Tools, Spiele, Rechner" autocomplete="off" />
+              </label>
+            </div>
+
+            <label>
+              <span>Beschreibung</span>
+              <textarea id="descriptionInput" name="description" rows="3" maxlength="1000"></textarea>
+            </label>
+
+            <label class="code-field">
+              <span>HTML / React JSX</span>
+              <textarea id="codeInput" name="code" spellcheck="false" required placeholder="Fertiges HTML oder React-Code aus ChatGPT Canvas"></textarea>
+            </label>
+          </section>
+
+          <section class="preview-panel" aria-label="Vorschau">
+            <div class="preview-head">
+              <h3>Vorschau</h3>
+              <span id="previewState">Entwurf</span>
+            </div>
+            <iframe id="previewFrame" title="App-Vorschau" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock" referrerpolicy="no-referrer"></iframe>
+          </section>
+        </div>
+
+        <footer class="modal-actions">
+          <div class="destructive-actions">
+            <button id="deleteBtn" class="danger" type="button" disabled>Löschen</button>
+          </div>
+          <div class="commit-actions">
+            <button id="duplicateBtn" class="ghost" type="button" disabled>Duplizieren</button>
+            <button id="saveBtn" class="primary" type="submit">Speichern</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
     <dialog id="settingsDialog" class="settings-dialog">
-      <form id="settingsForm" method="dialog">
-        <div class="panel-head">
-          <div>
+      <form id="settingsForm" class="settings-form">
+        <div class="modal-head compact-head">
+          <div class="modal-title">
             <p class="eyebrow">Sync</p>
             <h2>Einstellungen</h2>
           </div>
-          <button id="closeSettingsBtn" class="compact" type="button">Schließen</button>
+          <button id="closeSettingsBtn" class="icon-button" type="button" aria-label="Schließen">×</button>
         </div>
 
         <label>
@@ -131,7 +143,7 @@
         <p id="settingsMeta" class="meta-line"></p>
 
         <div class="dialog-actions">
-          <button id="saveSettingsBtn" class="primary" value="default" type="submit">Speichern</button>
+          <button id="saveSettingsBtn" class="primary" type="submit">Speichern</button>
         </div>
       </form>
     </dialog>

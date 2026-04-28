@@ -71,11 +71,11 @@ function bindElements() {
     "emptyState",
     "emptyNewBtn",
     "appGrid",
-    "editorPanel",
+    "appDialog",
     "appForm",
     "editorMode",
     "editorTitle",
-    "closeEditorBtn",
+    "closeAppDialogBtn",
     "nameInput",
     "descriptionInput",
     "tagsInput",
@@ -110,7 +110,11 @@ function bindEvents() {
   });
   els.emptyNewBtn.addEventListener("click", () => els.newAppBtn.click());
   els.refreshBtn.addEventListener("click", () => loadApps());
-  els.closeEditorBtn.addEventListener("click", closeEditor);
+  els.closeAppDialogBtn.addEventListener("click", closeEditor);
+  els.appDialog.addEventListener("click", closeDialogOnBackdrop);
+  els.appDialog.addEventListener("cancel", () => {
+    window.clearTimeout(state.previewTimer);
+  });
   els.appForm.addEventListener("submit", saveCurrentApp);
   els.duplicateBtn.addEventListener("click", duplicateCurrentApp);
   els.openBtn.addEventListener("click", openCurrentApp);
@@ -201,12 +205,19 @@ function renderApps() {
   for (const app of state.apps) {
     const card = document.createElement("article");
     card.className = "app-card";
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", `${app.name} öffnen`);
     if (app.id === state.selectedId) card.classList.add("selected");
+    card.addEventListener("click", () => loadApp(app.id));
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      loadApp(app.id);
+    });
 
-    const previewButton = document.createElement("button");
-    previewButton.type = "button";
-    previewButton.setAttribute("aria-label", `${app.name} auswählen`);
-    previewButton.addEventListener("click", () => loadApp(app.id));
+    const preview = document.createElement("div");
+    preview.className = "card-preview";
 
     const frame = document.createElement("iframe");
     frame.title = `${app.name} Vorschau`;
@@ -214,7 +225,7 @@ function renderApps() {
     frame.referrerPolicy = "no-referrer";
     frame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock");
     frame.src = `/run/${app.id}`;
-    previewButton.append(frame);
+    preview.append(frame);
 
     const body = document.createElement("div");
     body.className = "card-body";
@@ -244,9 +255,12 @@ function renderApps() {
       tagList.append(tagEl);
     }
 
-    body.append(titleRow, description, tagList);
-    body.addEventListener("click", () => loadApp(app.id));
-    card.append(previewButton, body);
+    const meta = document.createElement("div");
+    meta.className = "card-meta";
+    meta.append(tagList);
+
+    body.append(titleRow, description, meta);
+    card.append(preview, body);
     els.appGrid.append(card);
   }
 }
@@ -359,6 +373,7 @@ async function deleteCurrentApp() {
     showToast("Gelöscht.");
     resetEditor();
     await loadApps();
+    closeEditor();
   } catch (err) {
     showToast(err.message, true);
   } finally {
@@ -634,11 +649,19 @@ function formatDate(value) {
 }
 
 function openEditor() {
-  document.body.classList.add("editor-open");
+  if (typeof els.appDialog.showModal === "function") {
+    if (!els.appDialog.open) els.appDialog.showModal();
+  } else {
+    showToast("Dein Browser unterstützt Dialoge nicht.", true);
+  }
 }
 
 function closeEditor() {
-  document.body.classList.remove("editor-open");
+  if (els.appDialog.open) els.appDialog.close();
+}
+
+function closeDialogOnBackdrop(event) {
+  if (event.target === els.appDialog) closeEditor();
 }
 
 function setBusy(button, busy, label) {
