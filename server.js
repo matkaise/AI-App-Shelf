@@ -45,6 +45,7 @@ db.exec(`
     tags TEXT DEFAULT '',
     code TEXT NOT NULL,
     thumbnail TEXT DEFAULT '',
+    starred INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -59,6 +60,7 @@ db.exec(`
 `);
 
 ensureColumn("apps", "thumbnail", "TEXT DEFAULT ''");
+ensureColumn("apps", "starred", "INTEGER DEFAULT 0");
 migrateStoredGithubToken();
 queueThumbnailBackfill();
 
@@ -651,7 +653,7 @@ app.get("/api/apps", (req, res) => {
   const limit = Math.min(Number.parseInt(req.query.limit || "100", 10) || 100, 500);
   const offset = Math.max(Number.parseInt(req.query.offset || "0", 10) || 0, 0);
 
-  const selectFields = "id, name, description, tags, thumbnail, created_at, updated_at";
+  const selectFields = "id, name, description, tags, thumbnail, code, starred, created_at, updated_at";
   const rows = search
     ? db
         .prepare(
@@ -678,17 +680,19 @@ app.get("/api/apps", (req, res) => {
 
 app.get("/api/apps/:id", (req, res) => {
   const row = db
-    .prepare("SELECT id, name, description, tags, code, created_at, updated_at FROM apps WHERE id = ?")
+    .prepare("SELECT id, name, description, tags, code, starred, created_at, updated_at FROM apps WHERE id = ?")
     .get(req.params.id);
   if (!row) throw httpError(404, "App not found");
   res.json(row);
 });
 
 app.post("/api/apps", (req, res) => {
-  const appInput = prepareStoredApp(normalizeAppInput(getBodyObject(req)));
+  const body = getBodyObject(req);
+  const appInput = prepareStoredApp(normalizeAppInput(body));
+  const starred = body.starred ? 1 : 0;
   const result = db
-    .prepare("INSERT INTO apps (name, description, tags, code, thumbnail) VALUES (?, ?, ?, ?, ?)")
-    .run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail);
+    .prepare("INSERT INTO apps (name, description, tags, code, thumbnail, starred) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred);
 
   res.status(201).json(db.prepare("SELECT * FROM apps WHERE id = ?").get(result.lastInsertRowid));
 });
@@ -697,12 +701,22 @@ app.put("/api/apps/:id", (req, res) => {
   const existing = db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id);
   if (!existing) throw httpError(404, "App not found");
 
-  const appInput = prepareStoredApp(normalizeAppInput(getBodyObject(req), existing));
+  const body = getBodyObject(req);
+  const appInput = prepareStoredApp(normalizeAppInput(body, existing));
+  const starred = Object.hasOwn(body, "starred") ? (body.starred ? 1 : 0) : (existing.starred ?? 0);
   db.prepare(
-    "UPDATE apps SET name = ?, description = ?, tags = ?, code = ?, thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-  ).run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, req.params.id);
+    "UPDATE apps SET name = ?, description = ?, tags = ?, code = ?, thumbnail = ?, starred = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+  ).run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred, req.params.id);
 
   res.json(db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id));
+});
+
+app.post("/api/apps/:id/star", (req, res) => {
+  const row = db.prepare("SELECT starred FROM apps WHERE id = ?").get(req.params.id);
+  if (!row) throw httpError(404, "App not found");
+  const newStarred = row.starred ? 0 : 1;
+  db.prepare("UPDATE apps SET starred = ? WHERE id = ?").run(newStarred, req.params.id);
+  res.json({ ok: true, starred: Boolean(newStarred) });
 });
 
 app.delete("/api/apps/:id", (req, res) => {
