@@ -5,13 +5,14 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js"
+    "check": "node --check server.js && node --check public/app.js && node --check public/render.js && node --check scripts/smoke-test.js",
+    "test": "node scripts/smoke-test.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
-    "express": "^4.18.2"
+    "express": "^4.22.1"
   }
 }

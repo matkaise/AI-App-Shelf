@@ -3,6 +3,7 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const { renderRunnableApp } = require("./public/render");
 
 const app = express();
 
@@ -11,6 +12,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 const DATA_DIR = process.env.DATA_DIR || "./data";
 const APP_USERNAME = process.env.APP_USERNAME || "admin";
 const APP_PASSWORD = process.env.APP_PASSWORD || "";
+const ALLOW_UNAUTHENTICATED = process.env.ALLOW_UNAUTHENTICATED === "true";
 const ENV_GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
 const JSON_LIMIT = process.env.JSON_LIMIT || "15mb";
 const MAX_CODE_BYTES = Number.parseInt(process.env.MAX_CODE_BYTES || `${1024 * 1024 * 5}`, 10);
@@ -70,7 +72,12 @@ app.use(
 );
 
 function requireBasicAuth(req, res, next) {
-  if (!APP_PASSWORD || req.path === "/health") return next();
+  if (!APP_PASSWORD) {
+    if (ALLOW_UNAUTHENTICATED) return next();
+    return res
+      .status(503)
+      .send("AI App Shelf is locked. Set APP_PASSWORD or explicitly set ALLOW_UNAUTHENTICATED=true.");
+  }
 
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
@@ -97,12 +104,13 @@ function denyBasicAuth(res) {
 }
 
 function safeEqual(a, b) {
-  const left = Buffer.from(String(a));
-  const right = Buffer.from(String(b));
-  if (left.length !== right.length) return false;
+  const left = crypto.createHash("sha256").update(String(a)).digest();
+  const right = crypto.createHash("sha256").update(String(b)).digest();
   return crypto.timingSafeEqual(left, right);
 }
 
+// This is not authentication. The custom header forces browsers to use a CORS
+// preflight for cross-origin writes, which blocks plain form/script CSRF.
 function requireApiWriteHeader(req, res, next) {
   if (!req.path.startsWith("/api/")) return next();
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
@@ -139,6 +147,13 @@ function cleanString(value, fallback, maxLength) {
   const cleaned = value.trim();
   if (cleaned.length > maxLength) throw httpError(400, `Text field is too long (${maxLength} characters max)`);
   return cleaned;
+}
+
+function getBodyObject(req) {
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+    throw httpError(400, "JSON object body required");
+  }
+  return req.body;
 }
 
 function cleanCode(value, fallback) {
@@ -235,167 +250,24 @@ function decodeGithubContent(data) {
   return Buffer.from(content, "base64").toString("utf8");
 }
 
-function ensureRemoteApps(value) {
+function normalizeRemoteApps(value) {
   if (!Array.isArray(value)) throw httpError(400, "Remote apps file must contain a JSON array");
-  return value.map((app) => normalizeAppInput(app));
-}
+  const apps = [];
+  const skipped = [];
 
-function renderRunnableApp(code) {
-  if (isLikelyReactCanvasApp(code)) {
-    return { type: "react", html: buildReactCanvasHtml(code) };
-  }
-
-  return { type: "html", html: code };
-}
-
-function isLikelyReactCanvasApp(code) {
-  const trimmed = String(code || "").trim();
-  if (!trimmed) return false;
-  if (/^\s*(?:<!doctype|<html|<head|<body)\b/i.test(trimmed)) return false;
-  if (/^\s*</.test(trimmed) && !/\bclassName=|\{[^}]+\}/.test(trimmed)) return false;
-
-  return /from\s+["']react["']|export\s+default\s+function|\buse(?:State|Memo|Effect|Ref|Callback|Reducer)\s*\(|\bclassName=|return\s*\(\s*</.test(
-    trimmed
-  );
-}
-
-function buildReactCanvasHtml(source) {
-  const transformed = transformReactCanvasSource(source);
-  const candidateChecks = transformed.componentNames
-    .map((name) => `(typeof ${name} !== "undefined" ? ${name} : null)`)
-    .join(",\n        ");
-
-  return `<!doctype html>
-<html lang="de">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AI App Shelf React App</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <style>
-      html, body, #root { min-height: 100%; }
-      body { margin: 0; }
-      #app-shelf-error {
-        margin: 16px;
-        padding: 14px 16px;
-        border: 1px solid #fecaca;
-        border-radius: 8px;
-        background: #fef2f2;
-        color: #991b1b;
-        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        white-space: pre-wrap;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="root"></div>
-    <pre id="app-shelf-error" hidden></pre>
-    <script>
-      function showAppShelfError(error) {
-        var target = document.getElementById("app-shelf-error");
-        if (!target) return;
-        target.hidden = false;
-        target.textContent = error && (error.stack || error.message) ? (error.stack || error.message) : String(error);
-      }
-
-      window.addEventListener("error", function (event) {
-        showAppShelfError(event.error || event.message);
+  value.forEach((app, index) => {
+    try {
+      apps.push(normalizeAppInput(app));
+    } catch (err) {
+      skipped.push({
+        index,
+        name: app && typeof app.name === "string" ? app.name : "",
+        error: err.message,
       });
-
-      window.addEventListener("unhandledrejection", function (event) {
-        showAppShelfError(event.reason || "Unhandled promise rejection");
-      });
-    </script>
-    <script type="text/babel" data-presets="env,react">
-      const {
-        Children, Fragment, StrictMode, Suspense, cloneElement, createContext, forwardRef,
-        isValidElement, lazy, memo, startTransition, useCallback, useContext, useDebugValue,
-        useDeferredValue, useEffect, useId, useImperativeHandle, useInsertionEffect, useLayoutEffect,
-        useMemo, useReducer, useRef, useState, useSyncExternalStore, useTransition
-      } = React;
-
-${escapeScriptContent(transformed.code)}
-
-      const appShelfCandidates = [
-        ${candidateChecks}
-      ].filter(Boolean);
-      const appShelfComponent = appShelfCandidates.find((candidate) => {
-        return typeof candidate === "function" || (candidate && typeof candidate === "object");
-      });
-
-      if (!appShelfComponent) {
-        throw new Error("No React component found. Export a default component or name it App.");
-      }
-
-      ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(appShelfComponent));
-    </script>
-  </body>
-</html>`;
-}
-
-function transformReactCanvasSource(source) {
-  let code = String(source || "").trim();
-  let defaultComponent = null;
-
-  code = code
-    .replace(/^\s*import\s+(?:React\s*,\s*)?\{[^}]*\}\s+from\s+["']react["'];?\s*$/gm, "")
-    .replace(/^\s*import\s+React\s+from\s+["']react["'];?\s*$/gm, "")
-    .replace(/^\s*import\s+[^;\n]+;?\s*$/gm, (line) => {
-      return `/* Unsupported import removed by AI App Shelf: ${line.replace(/\*\//g, "* /")} */`;
-    });
-
-  code = code.replace(/export\s+default\s+function\s+([A-Za-z_$][\w$]*)\s*\(/, (match, name) => {
-    defaultComponent = name;
-    return `function ${name}(`;
+    }
   });
 
-  code = code.replace(/export\s+default\s+function\s*\(/, () => {
-    defaultComponent = "App";
-    return "function App(";
-  });
-
-  code = code.replace(/export\s+default\s+([A-Za-z_$][\w$]*);?/g, (match, name) => {
-    defaultComponent = name;
-    return "";
-  });
-
-  code = code
-    .replace(/export\s+(function|class)\s+/g, "$1 ")
-    .replace(/export\s+(const|let|var)\s+/g, "$1 ")
-    .replace(/export\s+\{[^}]*\};?/g, "");
-
-  const componentNames = [];
-  if (defaultComponent) componentNames.push(defaultComponent);
-  for (const name of guessReactComponentNames(code)) componentNames.push(name);
-  componentNames.push("App");
-
-  return {
-    code,
-    componentNames: [...new Set(componentNames.filter((name) => /^[A-Za-z_$][\w$]*$/.test(name)))],
-  };
-}
-
-function guessReactComponentNames(code) {
-  const names = [];
-  const patterns = [
-    /\bfunction\s+([A-Z][A-Za-z0-9_$]*)\s*\(/g,
-    /\b(?:const|let|var)\s+([A-Z][A-Za-z0-9_$]*)\s*=\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/g,
-    /\b(?:const|let|var)\s+([A-Z][A-Za-z0-9_$]*)\s*=\s*function\b/g,
-  ];
-
-  for (const pattern of patterns) {
-    let match;
-    while ((match = pattern.exec(code))) names.push(match[1]);
-  }
-
-  return names;
-}
-
-function escapeScriptContent(value) {
-  return String(value).replace(/<\/script/gi, "<\\/script").replace(/<!--/g, "<\\!--");
+  return { apps, skipped };
 }
 
 app.get("/api/apps", (req, res) => {
@@ -435,7 +307,7 @@ app.get("/api/apps/:id", (req, res) => {
 });
 
 app.post("/api/apps", (req, res) => {
-  const appInput = normalizeAppInput(req.body);
+  const appInput = normalizeAppInput(getBodyObject(req));
   const result = db
     .prepare("INSERT INTO apps (name, description, tags, code) VALUES (?, ?, ?, ?)")
     .run(appInput.name, appInput.description, appInput.tags, appInput.code);
@@ -447,7 +319,7 @@ app.put("/api/apps/:id", (req, res) => {
   const existing = db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id);
   if (!existing) throw httpError(404, "App not found");
 
-  const appInput = normalizeAppInput(req.body, existing);
+  const appInput = normalizeAppInput(getBodyObject(req), existing);
   db.prepare(
     "UPDATE apps SET name = ?, description = ?, tags = ?, code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
   ).run(appInput.name, appInput.description, appInput.tags, appInput.code, req.params.id);
@@ -473,15 +345,15 @@ app.get("/run/:id", (req, res) => {
     "Content-Security-Policy",
     [
       "default-src 'none'",
-      "script-src 'unsafe-inline' 'unsafe-eval' https: http:",
-      "style-src 'unsafe-inline' https: http:",
-      "img-src data: blob: https: http:",
-      "font-src data: https: http:",
-      "media-src data: blob: https: http:",
-      "connect-src https: http:",
-      "frame-src https: http:",
+      "script-src 'unsafe-inline' 'unsafe-eval' https:",
+      "style-src 'unsafe-inline' https:",
+      "img-src data: blob: https:",
+      "font-src data: https:",
+      "media-src data: blob: https:",
+      "connect-src https:",
+      "frame-src https:",
       "worker-src blob:",
-      "child-src blob: https: http:",
+      "child-src blob: https:",
       "manifest-src 'none'",
       "base-uri 'none'",
       "form-action 'none'",
@@ -500,16 +372,18 @@ app.get("/api/settings", (req, res) => {
     githubTokenConfigured: Boolean(cfg.token),
     githubTokenSource: cfg.tokenSource,
     authConfigured: Boolean(APP_PASSWORD),
+    authRequired: !ALLOW_UNAUTHENTICATED,
   });
 });
 
 app.put("/api/settings", (req, res) => {
-  if (Object.hasOwn(req.body, "githubRepo")) setSetting("githubRepo", normalizeRepo(req.body.githubRepo));
-  if (Object.hasOwn(req.body, "githubBranch")) setSetting("githubBranch", normalizeBranch(req.body.githubBranch));
-  if (Object.hasOwn(req.body, "githubFile")) setSetting("githubFile", normalizeFilePath(req.body.githubFile));
+  const body = getBodyObject(req);
+  if (Object.hasOwn(body, "githubRepo")) setSetting("githubRepo", normalizeRepo(body.githubRepo));
+  if (Object.hasOwn(body, "githubBranch")) setSetting("githubBranch", normalizeBranch(body.githubBranch));
+  if (Object.hasOwn(body, "githubFile")) setSetting("githubFile", normalizeFilePath(body.githubFile));
 
-  if (Object.hasOwn(req.body, "githubToken")) {
-    const token = cleanString(req.body.githubToken, "", 400);
+  if (Object.hasOwn(body, "githubToken")) {
+    const token = cleanString(body.githubToken, "", 400);
     if (token) setSetting("githubToken", token);
     else deleteSetting("githubToken");
   }
@@ -527,20 +401,31 @@ app.post(
     const content = Buffer.from(JSON.stringify(allApps, null, 2)).toString("base64");
     const contentPath = encodeContentPath(cfg.file);
 
-    let sha;
-    try {
-      const existing = await githubRequest("GET", `/repos/${cfg.repo}/contents/${contentPath}?ref=${encodeURIComponent(cfg.branch)}`);
-      sha = existing.sha;
-    } catch (err) {
-      if (err.status !== 404) throw err;
-    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let sha;
+      try {
+        const existing = await githubRequest(
+          "GET",
+          `/repos/${cfg.repo}/contents/${contentPath}?ref=${encodeURIComponent(cfg.branch)}`
+        );
+        sha = existing.sha;
+      } catch (err) {
+        if (err.status !== 404) throw err;
+      }
 
-    await githubRequest("PUT", `/repos/${cfg.repo}/contents/${contentPath}`, {
-      message: `sync: update apps ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
-      content,
-      branch: cfg.branch,
-      ...(sha ? { sha } : {}),
-    });
+      try {
+        await githubRequest("PUT", `/repos/${cfg.repo}/contents/${contentPath}`, {
+          message: `sync: update apps ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
+          content,
+          branch: cfg.branch,
+          ...(sha ? { sha } : {}),
+        });
+        break;
+      } catch (err) {
+        if (err.status === 409 && attempt === 0) continue;
+        throw err;
+      }
+    }
 
     res.json({ ok: true, count: allApps.length });
   })
@@ -554,7 +439,7 @@ app.post(
 
     const contentPath = encodeContentPath(cfg.file);
     const data = await githubRequest("GET", `/repos/${cfg.repo}/contents/${contentPath}?ref=${encodeURIComponent(cfg.branch)}`);
-    const remoteApps = ensureRemoteApps(JSON.parse(decodeGithubContent(data)));
+    const { apps: remoteApps, skipped } = normalizeRemoteApps(JSON.parse(decodeGithubContent(data)));
 
     let added = 0;
     let updated = 0;
@@ -578,7 +463,7 @@ app.post(
       }
     })(remoteApps);
 
-    res.json({ ok: true, added, updated });
+    res.json({ ok: true, added, updated, skipped: skipped.length, skippedApps: skipped });
   })
 );
 
@@ -596,6 +481,18 @@ app.use((err, req, res, next) => {
   return res.status(status).send(message);
 });
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`AI App Shelf running on http://${HOST}:${PORT}`);
 });
+
+function shutdown(signal) {
+  console.log(`${signal} received, shutting down`);
+  server.close(() => {
+    db.close();
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 5000).unref();
+}
+
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));

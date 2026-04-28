@@ -12,7 +12,8 @@ RUN npm ci --omit=dev
 COPY server.js ./
 COPY public/ ./public/
 
-RUN mkdir -p /data
+RUN mkdir -p /data && chown -R node:node /data /app
+USER node
 
 EXPOSE 3000
 VOLUME ["/data"]

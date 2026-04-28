@@ -11,11 +11,22 @@ Zentrale Ablage für KI-generierte Single-File-HTML-Apps aus ChatGPT Canvas, Cla
 - Suche über Name, Beschreibung und Tags
 - Optionaler GitHub-Sync über eine `apps.json`
 - SQLite-Datenbank im Docker-Volume
-- Optionale Basic-Auth per Environment Variable
+- Basic-Auth standardmäßig erforderlich
 
 ## Docker Compose
 
-Speichere diese `docker-compose.yml` auf deinem NAS:
+Lege zuerst eine `.env` neben deiner `docker-compose.yml` an:
+
+```env
+APP_USERNAME=admin
+APP_PASSWORD=bitte-ein-langes-passwort-setzen
+PUID=1000
+PGID=1000
+```
+
+Auf einem NAS kannst du `PUID` und `PGID` auf die UID/GID deines NAS-Benutzers setzen, damit `./data` beschreibbar bleibt.
+
+Speichere dann diese `docker-compose.yml`:
 
 ```yaml
 services:
@@ -27,11 +38,12 @@ services:
       - "3456:3000"
     volumes:
       - ./data:/data
+    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       DATA_DIR: /data
       PORT: 3000
-      APP_USERNAME: admin
-      APP_PASSWORD: bitte-aendern
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env before starting AI App Shelf}
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -77,11 +89,19 @@ environment:
 
 Wenn `GITHUB_TOKEN` gesetzt ist, wird dieser Token bevorzugt verwendet und nicht an die Oberfläche zurückgegeben.
 
+Wenn du den Token in der Oberfläche einträgst, wird er in SQLite gespeichert. Behandle `./data/apps.db` und Backups davon entsprechend wie ein Geheimnis.
+
 ## Sicherheit
 
-Gespeicherte HTML-Apps werden mit Browser-Sandbox und Content-Security-Policy ausgeliefert. Zusätzlich müssen schreibende API-Requests einen internen Header senden, damit sandboxed Apps nicht einfach Verwaltungsaktionen auslösen können.
+Die App startet ohne `APP_PASSWORD` nicht offen, sondern gesperrt. Für lokale Experimente kannst du bewusst ohne Auth starten:
 
-Für ein reines Heimnetz kann die App ohne Passwort laufen. Sobald sie über Reverse Proxy, VPN-Portal oder Internet erreichbar ist, sollte `APP_PASSWORD` gesetzt oder der Zugriff im Reverse Proxy geschützt werden.
+```bash
+ALLOW_UNAUTHENTICATED=true npm start
+```
+
+Für NAS- oder Reverse-Proxy-Betrieb sollte immer `APP_PASSWORD` gesetzt sein.
+
+Gespeicherte HTML-Apps werden mit Browser-Sandbox und Content-Security-Policy ausgeliefert. Zusätzlich müssen schreibende API-Requests einen internen Header senden. Dieser Header ist keine Authentifizierung, erzwingt im Browser aber einen CORS-Preflight und blockiert einfache Cross-Site-Formular-/Script-Requests.
 
 ## React-Code aus Canvas
 
@@ -104,7 +124,19 @@ Wichtig: Beliebige Imports aus npm-Paketen werden nicht automatisch gebündelt. 
 ```bash
 npm install
 npm run check
+```
+
+PowerShell:
+
+```powershell
+$env:APP_PASSWORD = "dev-password"
 npm start
+```
+
+Bash:
+
+```bash
+APP_PASSWORD=dev-password npm start
 ```
 
 Standard-Port:
