@@ -47,12 +47,12 @@ async function startServer(env, options = {}) {
   throw new Error(`server did not start: ${output}`);
 }
 
-async function stopServer(server) {
+async function stopServer(server, options = {}) {
   if (server.child.exitCode === null) {
     server.child.kill();
     await Promise.race([once(server.child, "exit"), sleep(5000)]);
   }
-  fs.rmSync(server.dataDir, { recursive: true, force: true });
+  if (options.removeData !== false) fs.rmSync(server.dataDir, { recursive: true, force: true });
 }
 
 async function getFreePort() {
@@ -108,6 +108,7 @@ async function testFailClosed() {
 
 async function testAppFlow() {
   const server = await startServer({ ALLOW_UNAUTHENTICATED: "true", APP_PASSWORD: "", APP_SECRET: "test-secret" });
+  let stoppedForDbRead = false;
   try {
     const indexResponse = await fetch(`${server.base}/`);
     const html = await indexResponse.text();
@@ -159,6 +160,9 @@ export default function App() {
     });
     expect(settingsResponse.ok, `settings save failed: ${settingsResponse.status}`);
 
+    await stopServer(server, { removeData: false });
+    stoppedForDbRead = true;
+
     const db = new Database(path.join(server.dataDir, "apps.db"), { readonly: true });
     const stored = db.prepare("SELECT value FROM settings WHERE key = ?").get("githubToken").value;
     const salt = db.prepare("SELECT value FROM settings WHERE key = ?").get("secretSalt").value;
@@ -167,7 +171,8 @@ export default function App() {
     expect(Boolean(salt), "secret salt should be stored with the database");
     expect(!stored.includes("ghp_secret_for_test"), "stored GitHub token leaked plaintext");
   } finally {
-    await stopServer(server);
+    if (stoppedForDbRead) fs.rmSync(server.dataDir, { recursive: true, force: true });
+    else await stopServer(server);
   }
 }
 
