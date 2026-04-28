@@ -24,7 +24,7 @@ async function startServer(env, options = {}) {
 
   const child = spawn(process.execPath, ["server.js"], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, ...env },
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, ENABLE_SCREENSHOT_THUMBNAILS: "false", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
 

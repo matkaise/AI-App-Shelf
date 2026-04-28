@@ -16,6 +16,7 @@ services:
       APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env before starting AI App Shelf}
       # TRUST_PROXY: "1"
       # ALLOW_UNAUTHENTICATED: "true"
+      # ENABLE_SCREENSHOT_THUMBNAILS: "false"
       # GITHUB_TOKEN: ghp_xxx
     security_opt:
       - no-new-privileges:true

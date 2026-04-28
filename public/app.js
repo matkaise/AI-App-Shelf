@@ -16,6 +16,7 @@ const S = {
   uploadHtml: '',
   uploadTitle: '',
   uploadTags: '',
+  thumbnailRefreshTimers: [],
 };
 
 const E = {};
@@ -565,10 +566,20 @@ async function doSaveApp() {
     closeUploadFlow();
     showToast(saveMessage(saved));
     await loadApps();
+    scheduleThumbnailRefresh();
   } catch (err) {
     showToast(err.message, true);
     if (saveBtn) { saveBtn.textContent = S.editingApp ? 'Save changes' : 'Save to shelf'; saveBtn.disabled = false; }
   }
+}
+
+function scheduleThumbnailRefresh() {
+  S.thumbnailRefreshTimers.forEach((timer) => clearTimeout(timer));
+  S.thumbnailRefreshTimers = [1800, 4500, 9000].map((delay) =>
+    setTimeout(() => {
+      loadApps();
+    }, delay)
+  );
 }
 
 function saveMessage(app) {

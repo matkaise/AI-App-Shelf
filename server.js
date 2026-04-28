@@ -3,6 +3,8 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const net = require("net");
+const dns = require("dns").promises;
 const esbuild = require("esbuild");
 const { isLikelyReactCanvasApp, renderRunnableApp, transformReactCanvasSource } = require("./public/render");
 
@@ -23,6 +25,13 @@ const MAX_CODE_BYTES = Number.parseInt(process.env.MAX_CODE_BYTES || `${1024 * 1
 const ENABLE_BUNDLER = process.env.ENABLE_BUNDLER !== "false";
 const BUNDLE_FETCH_TIMEOUT_MS = Number.parseInt(process.env.BUNDLE_FETCH_TIMEOUT_MS || "20000", 10) || 20000;
 const BUNDLE_CDN_HOST = "esm.sh";
+const ENABLE_SCREENSHOT_THUMBNAILS = process.env.ENABLE_SCREENSHOT_THUMBNAILS !== "false";
+const SCREENSHOT_THUMBNAIL_WIDTH = Number.parseInt(process.env.SCREENSHOT_THUMBNAIL_WIDTH || "960", 10) || 960;
+const SCREENSHOT_THUMBNAIL_HEIGHT = Number.parseInt(process.env.SCREENSHOT_THUMBNAIL_HEIGHT || "600", 10) || 600;
+const SCREENSHOT_THUMBNAIL_TIMEOUT_MS =
+  Number.parseInt(process.env.SCREENSHOT_THUMBNAIL_TIMEOUT_MS || "12000", 10) || 12000;
+const SCREENSHOT_THUMBNAIL_BACKFILL_LIMIT =
+  Number.parseInt(process.env.SCREENSHOT_THUMBNAIL_BACKFILL_LIMIT || "200", 10) || 200;
 const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_RATE_LIMIT_MAX = 30;
 const AUTH_RATE_LIMIT_MAX_BUCKETS = Math.max(
@@ -31,8 +40,15 @@ const AUTH_RATE_LIMIT_MAX_BUCKETS = Math.max(
 );
 const AUTH_RATE_LIMIT_SWEEP_MS = 5 * 60 * 1000;
 const authFailures = new Map();
+const screenshotThumbnailQueue = [];
+const screenshotThumbnailQueuedIds = new Set();
+const screenshotDnsCache = new Map();
 let cachedSecretKeySalt = "";
 let cachedSecretKey = null;
+let screenshotThumbnailWorkerActive = false;
+let screenshotThumbnailUnavailable = false;
+let screenshotThumbnailWarningLogged = false;
+let screenshotBrowserPromise = null;
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -1016,6 +1032,240 @@ function backfillMissingThumbnails(batchSize = 250) {
   if (rows.length === batchSize) queueThumbnailBackfill();
 }
 
+function queueScreenshotThumbnail(id) {
+  if (!ENABLE_SCREENSHOT_THUMBNAILS || screenshotThumbnailUnavailable) return;
+  const appId = Number.parseInt(id, 10);
+  if (!Number.isFinite(appId) || appId <= 0 || screenshotThumbnailQueuedIds.has(appId)) return;
+
+  screenshotThumbnailQueuedIds.add(appId);
+  screenshotThumbnailQueue.push(appId);
+  setImmediate(processScreenshotThumbnailQueue);
+}
+
+function queueScreenshotThumbnailBackfill() {
+  if (!ENABLE_SCREENSHOT_THUMBNAILS || SCREENSHOT_THUMBNAIL_BACKFILL_LIMIT <= 0) return;
+  const rows = db
+    .prepare(
+      `SELECT id
+       FROM apps
+       WHERE thumbnail IS NULL
+          OR thumbnail = ''
+          OR thumbnail LIKE 'data:image/svg+xml%'
+       ORDER BY updated_at DESC, id DESC
+       LIMIT ?`
+    )
+    .all(SCREENSHOT_THUMBNAIL_BACKFILL_LIMIT);
+
+  for (const row of rows) queueScreenshotThumbnail(row.id);
+}
+
+async function processScreenshotThumbnailQueue() {
+  if (screenshotThumbnailWorkerActive || screenshotThumbnailUnavailable) return;
+  screenshotThumbnailWorkerActive = true;
+
+  try {
+    while (screenshotThumbnailQueue.length && !screenshotThumbnailUnavailable) {
+      const appId = screenshotThumbnailQueue.shift();
+      screenshotThumbnailQueuedIds.delete(appId);
+
+      try {
+        await generateAndStoreScreenshotThumbnail(appId);
+      } catch (err) {
+        handleScreenshotThumbnailError(err);
+      }
+    }
+  } finally {
+    screenshotThumbnailWorkerActive = false;
+  }
+}
+
+async function generateAndStoreScreenshotThumbnail(id) {
+  const row = db.prepare("SELECT id, updated_at FROM apps WHERE id = ?").get(id);
+  if (!row) return;
+
+  const thumbnail = await captureAppScreenshotThumbnail(row.id);
+  db.prepare("UPDATE apps SET thumbnail = ? WHERE id = ? AND updated_at = ?").run(thumbnail, row.id, row.updated_at);
+}
+
+async function captureAppScreenshotThumbnail(id) {
+  const browser = await getScreenshotBrowser();
+  const localOrigin = getLocalRunOrigin();
+  const context = await browser.newContext({
+    viewport: { width: SCREENSHOT_THUMBNAIL_WIDTH, height: SCREENSHOT_THUMBNAIL_HEIGHT },
+    deviceScaleFactor: 1,
+    javaScriptEnabled: true,
+    ...(APP_PASSWORD ? { httpCredentials: { username: APP_USERNAME, password: APP_PASSWORD } } : {}),
+  });
+
+  try {
+    await context.route("**/*", (route) => handleScreenshotRoute(route, localOrigin));
+    const page = await context.newPage();
+    page.setDefaultTimeout(SCREENSHOT_THUMBNAIL_TIMEOUT_MS);
+    page.setDefaultNavigationTimeout(SCREENSHOT_THUMBNAIL_TIMEOUT_MS);
+    await page.goto(`${localOrigin}/run/${id}`, {
+      waitUntil: "domcontentloaded",
+      timeout: SCREENSHOT_THUMBNAIL_TIMEOUT_MS,
+    });
+    await page.waitForLoadState("networkidle", { timeout: 2500 }).catch(() => {});
+    await page.waitForTimeout(300);
+    const buffer = await page.screenshot({
+      type: "jpeg",
+      quality: 82,
+      fullPage: false,
+      animations: "disabled",
+    });
+    return `data:image/jpeg;base64,${buffer.toString("base64")}`;
+  } finally {
+    await context.close();
+  }
+}
+
+async function getScreenshotBrowser() {
+  const executablePath = findChromiumExecutable();
+  if (!executablePath) {
+    screenshotThumbnailUnavailable = true;
+    throw new Error(
+      "No Chrome/Chromium executable found for screenshot thumbnails. Set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH or disable ENABLE_SCREENSHOT_THUMBNAILS."
+    );
+  }
+
+  if (!screenshotBrowserPromise) {
+    const { chromium } = require("playwright-core");
+    screenshotBrowserPromise = chromium
+      .launch({
+        executablePath,
+        headless: true,
+        args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+      })
+      .catch((err) => {
+        screenshotBrowserPromise = null;
+        throw err;
+      });
+  }
+
+  const browser = await screenshotBrowserPromise;
+  if (!browser.isConnected()) {
+    screenshotBrowserPromise = null;
+    return getScreenshotBrowser();
+  }
+  return browser;
+}
+
+function findChromiumExecutable() {
+  const envPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || process.env.CHROMIUM_PATH || process.env.CHROME_PATH;
+  const candidates = [
+    envPath,
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "";
+}
+
+async function handleScreenshotRoute(route, localOrigin) {
+  const url = route.request().url();
+  try {
+    if (await isAllowedScreenshotRequest(url, localOrigin)) {
+      await route.continue();
+    } else {
+      await route.abort();
+    }
+  } catch {
+    try {
+      await route.abort();
+    } catch {}
+  }
+}
+
+async function isAllowedScreenshotRequest(value, localOrigin) {
+  if (value.startsWith("data:") || value.startsWith("blob:") || value.startsWith("about:")) return true;
+
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+
+  if (parsed.origin === localOrigin) return true;
+  if (parsed.protocol !== "https:") return false;
+  if (await hostnameResolvesToPrivate(parsed.hostname)) return false;
+  return true;
+}
+
+async function hostnameResolvesToPrivate(hostname) {
+  const clean = String(hostname || "").toLowerCase().replace(/\.$/, "");
+  if (!clean) return true;
+  if (["localhost", "localhost.localdomain"].includes(clean)) return true;
+
+  const ipType = net.isIP(clean);
+  if (ipType) return isPrivateIp(clean);
+
+  const cached = screenshotDnsCache.get(clean);
+  if (cached && cached.expiresAt > Date.now()) return cached.private;
+
+  try {
+    const addresses = await dns.lookup(clean, { all: true });
+    const isPrivate = addresses.some((address) => isPrivateIp(address.address));
+    screenshotDnsCache.set(clean, { private: isPrivate, expiresAt: Date.now() + 5 * 60 * 1000 });
+    return isPrivate;
+  } catch {
+    return true;
+  }
+}
+
+function isPrivateIp(value) {
+  const ip = String(value || "").toLowerCase();
+  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return isPrivateIp(mapped[1]);
+
+  if (net.isIP(ip) === 4) {
+    const parts = ip.split(".").map((part) => Number.parseInt(part, 10));
+    const [a, b] = parts;
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    );
+  }
+
+  if (net.isIP(ip) === 6) {
+    return (
+      ip === "::1" ||
+      ip === "::" ||
+      ip.startsWith("fc") ||
+      ip.startsWith("fd") ||
+      /^fe[89ab]/.test(ip)
+    );
+  }
+
+  return true;
+}
+
+function getLocalRunOrigin() {
+  return `http://127.0.0.1:${PORT}`;
+}
+
+function handleScreenshotThumbnailError(err) {
+  if (!screenshotThumbnailWarningLogged) {
+    screenshotThumbnailWarningLogged = true;
+    console.warn(`Screenshot thumbnails unavailable: ${err.message}`);
+  }
+}
+
 function normalizeRepo(repo) {
   const cleaned = cleanString(repo, "", 160);
   if (!cleaned) return "";
@@ -1159,6 +1409,7 @@ app.post(
       .run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred);
 
     const saved = await rebuildAppBundle(result.lastInsertRowid);
+    queueScreenshotThumbnail(saved.id);
     res.status(201).json(appResponse(db.prepare(`SELECT ${publicAppFields()} FROM apps WHERE id = ?`).get(saved.id)));
   })
 );
@@ -1177,6 +1428,7 @@ app.put(
     ).run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred, req.params.id);
 
     const saved = await rebuildAppBundle(req.params.id);
+    queueScreenshotThumbnail(saved.id);
     res.json(appResponse(db.prepare(`SELECT ${publicAppFields()} FROM apps WHERE id = ?`).get(saved.id)));
   })
 );
@@ -1350,6 +1602,7 @@ app.post(
 
     let added = 0;
     let updated = 0;
+    const changedIds = [];
 
     db.transaction((apps) => {
       const findByName = db.prepare("SELECT id FROM apps WHERE name = ?");
@@ -1378,14 +1631,17 @@ app.post(
         const existing = findByName.get(remoteApp.name);
         if (existing) {
           updateApp.run(appInput.description, appInput.tags, appInput.code, appInput.thumbnail, existing.id);
+          changedIds.push(existing.id);
           updated++;
         } else {
-          insertApp.run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail);
+          const result = insertApp.run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail);
+          changedIds.push(result.lastInsertRowid);
           added++;
         }
       }
     })(remoteApps);
 
+    for (const id of changedIds) queueScreenshotThumbnail(id);
     res.json({ ok: true, added, updated, skipped: skipped.length, skippedApps: skipped });
   })
 );
@@ -1406,11 +1662,18 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`AI App Shelf running on http://${HOST}:${PORT}`);
+  queueScreenshotThumbnailBackfill();
 });
 
 function shutdown(signal) {
   console.log(`${signal} received, shutting down`);
-  server.close(() => {
+  server.close(async () => {
+    if (screenshotBrowserPromise) {
+      try {
+        const browser = await screenshotBrowserPromise;
+        await browser.close();
+      } catch {}
+    }
     db.close();
     process.exit(0);
   });

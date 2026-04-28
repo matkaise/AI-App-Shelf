@@ -136,6 +136,22 @@ Du kannst den Bundler bei Bedarf deaktivieren:
 ENABLE_BUNDLER=false npm start
 ```
 
+## Screenshot-Thumbnails
+
+Beim Speichern bleibt zuerst ein schnelles SVG-Thumbnail sichtbar. Danach versucht der Server im Hintergrund, die App in einem isolierten Chromium-Kontext zu öffnen und ein echtes JPEG-Thumbnail zu speichern. Das Dashboard lädt dadurch weiterhin nur Bilder, nicht die laufenden Apps.
+
+Im Docker-Image ist Chromium enthalten. Lokal nutzt AI App Shelf ein installiertes Chrome/Chromium; falls es nicht automatisch gefunden wird, kannst du den Pfad setzen:
+
+```bash
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm start
+```
+
+Die Screenshot-Erzeugung blockiert private LAN-/localhost-Ziele und erlaubt neben der eigenen `/run/:id`-Seite nur öffentliche HTTPS-Requests. Du kannst sie bei Bedarf deaktivieren:
+
+```bash
+ENABLE_SCREENSHOT_THUMBNAILS=false npm start
+```
+
 ## Entwicklung
 
 ```bash
