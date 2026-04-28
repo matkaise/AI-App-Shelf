@@ -190,6 +190,29 @@ async function testTokenRequiresSecret() {
   }
 }
 
+async function testPlaintextTokenIsReported() {
+  const server = await startServer({
+    ALLOW_UNAUTHENTICATED: "true",
+    APP_PASSWORD: "",
+    APP_SECRET: "",
+    ALLOW_PLAINTEXT_SECRETS: "true",
+  });
+  try {
+    const { response } = await requestJson(`${server.base}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-App-Shelf-Request": "1" },
+      body: JSON.stringify({ githubToken: "ghp_plaintext_allowed" }),
+    });
+    expect(response.ok, `expected plaintext token save to be allowed, got ${response.status}`);
+
+    const settings = await fetch(`${server.base}/api/settings`).then((res) => res.json());
+    expect(settings.githubTokenStorage === "plaintext", "settings should report plaintext token storage");
+    expect(settings.githubTokenSource === "database-plaintext", "settings should report plaintext database source");
+  } finally {
+    await stopServer(server);
+  }
+}
+
 async function testTokenMigratesAtBootOnly() {
   const server = await startServer(
     { ALLOW_UNAUTHENTICATED: "true", APP_PASSWORD: "", APP_SECRET: "migration-secret" },
@@ -239,11 +262,23 @@ async function testBasicAuth() {
 async function testBasicAuthRateLimit() {
   const server = await startServer({ APP_USERNAME: "admin", APP_PASSWORD: "secret" });
   try {
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 29; i++) {
       const denied = await fetch(`${server.base}/api/apps`, {
         headers: { Authorization: authHeader("admin", "wrong") },
       });
       expect(denied.status === 401, `expected 401 before rate limit, got ${denied.status}`);
+    }
+
+    const reset = await fetch(`${server.base}/api/apps`, {
+      headers: { Authorization: authHeader("admin", "secret") },
+    });
+    expect(reset.ok, `expected successful auth to reset failures, got ${reset.status}`);
+
+    for (let i = 0; i < 30; i++) {
+      const denied = await fetch(`${server.base}/api/apps`, {
+        headers: { Authorization: authHeader("admin", "wrong") },
+      });
+      expect(denied.status === 401, `expected 401 before rate limit after reset, got ${denied.status}`);
     }
 
     const limited = await fetch(`${server.base}/api/apps`, {
@@ -255,14 +290,49 @@ async function testBasicAuthRateLimit() {
   }
 }
 
+async function testTrustProxyRateLimitIsolation() {
+  const server = await startServer({ APP_USERNAME: "admin", APP_PASSWORD: "secret", TRUST_PROXY: "1" });
+  try {
+    for (let i = 0; i < 30; i++) {
+      const denied = await fetch(`${server.base}/api/apps`, {
+        headers: {
+          Authorization: authHeader("admin", "wrong"),
+          "X-Forwarded-For": "203.0.113.10",
+        },
+      });
+      expect(denied.status === 401, `expected proxied 401 before rate limit, got ${denied.status}`);
+    }
+
+    const limited = await fetch(`${server.base}/api/apps`, {
+      headers: {
+        Authorization: authHeader("admin", "wrong"),
+        "X-Forwarded-For": "203.0.113.10",
+      },
+    });
+    expect(limited.status === 429, `expected proxied IP to be limited, got ${limited.status}`);
+
+    const otherIp = await fetch(`${server.base}/api/apps`, {
+      headers: {
+        Authorization: authHeader("admin", "wrong"),
+        "X-Forwarded-For": "203.0.113.11",
+      },
+    });
+    expect(otherIp.status === 401, `expected another proxied IP to have its own bucket, got ${otherIp.status}`);
+  } finally {
+    await stopServer(server);
+  }
+}
+
 (async () => {
   testRendererWarnings();
   await testFailClosed();
   await testAppFlow();
   await testTokenRequiresSecret();
+  await testPlaintextTokenIsReported();
   await testTokenMigratesAtBootOnly();
   await testBasicAuth();
   await testBasicAuthRateLimit();
+  await testTrustProxyRateLimitIsolation();
   console.log("smoke tests passed");
 })().catch((err) => {
   console.error(err);

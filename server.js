@@ -3,7 +3,7 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { renderRunnableApp } = require("./public/render");
+const { isLikelyReactCanvasApp, renderRunnableApp, transformReactCanvasSource } = require("./public/render");
 
 const app = express();
 
@@ -16,11 +16,19 @@ const ALLOW_UNAUTHENTICATED = process.env.ALLOW_UNAUTHENTICATED === "true";
 const APP_SECRET = process.env.APP_SECRET || "";
 const ALLOW_PLAINTEXT_SECRETS = process.env.ALLOW_PLAINTEXT_SECRETS === "true";
 const ENV_GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+const TRUST_PROXY = process.env.TRUST_PROXY || "";
 const JSON_LIMIT = process.env.JSON_LIMIT || "15mb";
 const MAX_CODE_BYTES = Number.parseInt(process.env.MAX_CODE_BYTES || `${1024 * 1024 * 5}`, 10);
 const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_RATE_LIMIT_MAX = 30;
+const AUTH_RATE_LIMIT_MAX_BUCKETS = Math.max(
+  100,
+  Number.parseInt(process.env.AUTH_RATE_LIMIT_MAX_BUCKETS || "10000", 10) || 10000
+);
+const AUTH_RATE_LIMIT_SWEEP_MS = 5 * 60 * 1000;
 const authFailures = new Map();
+let cachedSecretKeySalt = "";
+let cachedSecretKey = null;
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -55,6 +63,11 @@ migrateStoredGithubToken();
 queueThumbnailBackfill();
 
 app.disable("x-powered-by");
+if (TRUST_PROXY) app.set("trust proxy", parseTrustProxy(TRUST_PROXY));
+
+const authFailureSweep = setInterval(() => sweepAuthFailures(), AUTH_RATE_LIMIT_SWEEP_MS);
+authFailureSweep.unref();
+
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
@@ -117,6 +130,15 @@ function requireBasicAuth(req, res, next) {
   return denyBasicAuth(req, res);
 }
 
+function parseTrustProxy(value) {
+  const trimmed = String(value || "").trim();
+  const lower = trimmed.toLowerCase();
+  if (["true", "yes", "on"].includes(lower)) return true;
+  if (["false", "no", "off", "0"].includes(lower)) return false;
+  if (/^\d+$/.test(trimmed)) return Number.parseInt(trimmed, 10);
+  return trimmed;
+}
+
 function denyBasicAuth(req, res) {
   recordAuthFailure(req);
   res.setHeader("WWW-Authenticate", 'Basic realm="AI App Shelf"');
@@ -132,9 +154,13 @@ function getAuthFailureBucket(req) {
   const now = Date.now();
   const current = authFailures.get(key);
   if (current && now - current.startedAt < AUTH_RATE_LIMIT_WINDOW_MS) return current;
+  if (current) authFailures.delete(key);
+
+  if (authFailures.size >= AUTH_RATE_LIMIT_MAX_BUCKETS) sweepAuthFailures();
 
   const fresh = { count: 0, startedAt: now };
   authFailures.set(key, fresh);
+  enforceAuthFailureBucketLimit();
   return fresh;
 }
 
@@ -148,6 +174,22 @@ function recordAuthFailure(req) {
 
 function clearAuthFailures(req) {
   authFailures.delete(authRateKey(req));
+}
+
+function sweepAuthFailures() {
+  const now = Date.now();
+  for (const [key, bucket] of authFailures) {
+    if (now - bucket.startedAt >= AUTH_RATE_LIMIT_WINDOW_MS) authFailures.delete(key);
+  }
+  enforceAuthFailureBucketLimit();
+}
+
+function enforceAuthFailureBucketLimit() {
+  while (authFailures.size > AUTH_RATE_LIMIT_MAX_BUCKETS) {
+    const oldestKey = authFailures.keys().next().value;
+    if (oldestKey === undefined) break;
+    authFailures.delete(oldestKey);
+  }
 }
 
 function safeEqual(a, b) {
@@ -224,12 +266,15 @@ function legacySecretKey() {
 }
 
 function secretKey(salt) {
-  return crypto.scryptSync(APP_SECRET, Buffer.from(salt, "base64url"), 32, {
+  if (cachedSecretKey && cachedSecretKeySalt === salt) return cachedSecretKey;
+  cachedSecretKeySalt = salt;
+  cachedSecretKey = crypto.scryptSync(APP_SECRET, Buffer.from(salt, "base64url"), 32, {
     cost: 16384,
     blockSize: 8,
     parallelization: 1,
     maxmem: 64 * 1024 * 1024,
   });
+  return cachedSecretKey;
 }
 
 function getOrCreateSecretSalt(createIfMissing = true) {
@@ -346,7 +391,9 @@ function migrateStoredGithubToken() {
 
     setSetting("githubToken", encryptSecret(stored));
   } catch (err) {
-    console.warn(`Could not migrate stored GitHub token: ${err.message}`);
+    console.warn(
+      `Could not migrate stored GitHub token: ${err.message}. Restore the previous APP_SECRET or save a new token in settings.`
+    );
   }
 }
 
@@ -398,7 +445,7 @@ function prepareStoredApp(appInput) {
 }
 
 function buildAppThumbnail(appInput) {
-  const rendered = renderRunnableApp(appInput.code || "");
+  const renderMeta = getThumbnailRenderMeta(appInput.code || "");
   const seed = crypto
     .createHash("sha256")
     .update(`${appInput.name || ""}|${appInput.tags || ""}`)
@@ -414,8 +461,8 @@ function buildAppThumbnail(appInput) {
   const title = truncateText(appInput.name || "Untitled App", 42);
   const description = truncateText(appInput.description || "AI App Shelf", 78);
   const tags = splitTagText(appInput.tags).slice(0, 3);
-  const typeLabel = rendered.type === "react" ? "React" : "HTML";
-  const warningLabel = rendered.warnings && rendered.warnings.length ? `${rendered.warnings.length} Hinweise` : "";
+  const typeLabel = renderMeta.type === "react" ? "React" : "HTML";
+  const warningLabel = renderMeta.warningCount ? `${renderMeta.warningCount} Hinweise` : "";
 
   const tagSvg = tags
     .map((tag, index) => {
@@ -457,6 +504,14 @@ function buildAppThumbnail(appInput) {
   return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }
 
+function getThumbnailRenderMeta(code) {
+  if (!isLikelyReactCanvasApp(code)) return { type: "html", warningCount: 0 };
+  return {
+    type: "react",
+    warningCount: transformReactCanvasSource(code).warnings.length,
+  };
+}
+
 function splitTagText(value) {
   return String(value || "")
     .split(",")
@@ -483,7 +538,9 @@ function queueThumbnailBackfill() {
 
 function backfillMissingThumbnails(batchSize = 250) {
   const rows = db
-    .prepare("SELECT id, name, description, tags, code FROM apps WHERE thumbnail IS NULL OR thumbnail = '' LIMIT ?")
+    .prepare(
+      "SELECT id, name, description, tags, substr(code, 1, 20000) AS code FROM apps WHERE thumbnail IS NULL OR thumbnail = '' LIMIT ?"
+    )
     .all(batchSize);
   if (!rows.length) return;
 

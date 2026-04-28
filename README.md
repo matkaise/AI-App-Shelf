@@ -46,6 +46,7 @@ services:
       APP_USERNAME: ${APP_USERNAME:-admin}
       APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env before starting AI App Shelf}
       APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env before starting AI App Shelf}
+      # TRUST_PROXY: "1"
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -108,6 +109,8 @@ ALLOW_UNAUTHENTICATED=true npm start
 Für NAS- oder Reverse-Proxy-Betrieb sollte immer `APP_PASSWORD` gesetzt sein.
 
 Gespeicherte HTML-Apps werden mit Browser-Sandbox und Content-Security-Policy ausgeliefert. Die Hauptoberfläche blockiert Framing, und Basic-Auth-Fehlversuche werden einfach pro IP begrenzt. Zusätzlich müssen schreibende API-Requests einen internen Header senden. Dieser Header ist keine Authentifizierung, erzwingt im Browser aber einen CORS-Preflight und blockiert einfache Cross-Site-Formular-/Script-Requests.
+
+Wenn AI App Shelf hinter einem Reverse Proxy läuft und dieser `X-Forwarded-For` korrekt setzt, kannst du `TRUST_PROXY=1` aktivieren. Dann zählt das Basic-Auth-Rate-Limit pro echter Client-IP statt pro Proxy-IP. Nutze das nur, wenn die App nicht direkt aus dem Internet erreichbar ist und der Proxy die Forwarded-Header kontrolliert.
 
 ## React-Code aus Canvas
 

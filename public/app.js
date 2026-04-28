@@ -479,6 +479,8 @@ function renderSettings() {
       tokenText = "Token: gespeichert, APP_SECRET fehlt";
     } else if (settings.githubTokenStorage === "encrypted") {
       tokenText = "Token: gespeichert (verschluesselt)";
+    } else if (settings.githubTokenStorage === "plaintext") {
+      tokenText = "Token: gespeichert (Klartext)";
     } else {
       tokenText = "Token: gespeichert";
     }
