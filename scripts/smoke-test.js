@@ -2,6 +2,7 @@ const { spawn } = require("child_process");
 const { once } = require("events");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const Database = require("better-sqlite3");
 
 const root = path.resolve(__dirname, "..");
@@ -76,6 +77,15 @@ async function requestJson(url, options = {}) {
 
 function authHeader(username, password) {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+}
+
+function legacyEncryptSecret(secret, value) {
+  const key = crypto.createHash("sha256").update(secret).digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
 }
 
 function testRendererWarnings() {
@@ -244,6 +254,41 @@ async function testTokenMigratesAtBootOnly() {
   }
 }
 
+async function testV1TokenMigratesToV2() {
+  const secret = "legacy-migration-secret";
+  const v1Token = legacyEncryptSecret(secret, "ghp_v1_migration");
+  const server = await startServer(
+    { ALLOW_UNAUTHENTICATED: "true", APP_PASSWORD: "", APP_SECRET: secret },
+    {
+      beforeStart(dataDir) {
+        fs.mkdirSync(dataDir, { recursive: true });
+        const db = new Database(path.join(dataDir, "apps.db"));
+        db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)");
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("githubToken", v1Token);
+        db.close();
+      },
+    }
+  );
+  let stoppedForDbRead = false;
+
+  try {
+    const settings = await fetch(`${server.base}/api/settings`).then((res) => res.json());
+    expect(settings.githubTokenStorage === "encrypted", "v1 migration should report encrypted storage");
+
+    await stopServer(server, { removeData: false });
+    stoppedForDbRead = true;
+
+    const db = new Database(path.join(server.dataDir, "apps.db"), { readonly: true });
+    const migrated = db.prepare("SELECT value FROM settings WHERE key = ?").get("githubToken").value;
+    db.close();
+    expect(migrated.startsWith("enc:v2:"), "v1 token should migrate to v2 on boot");
+    expect(migrated !== v1Token, "v1 token should be replaced during migration");
+  } finally {
+    if (stoppedForDbRead) fs.rmSync(server.dataDir, { recursive: true, force: true });
+    else await stopServer(server);
+  }
+}
+
 async function testBasicAuth() {
   const server = await startServer({ APP_USERNAME: "admin", APP_PASSWORD: "secret" });
   try {
@@ -330,6 +375,7 @@ async function testTrustProxyRateLimitIsolation() {
   await testTokenRequiresSecret();
   await testPlaintextTokenIsReported();
   await testTokenMigratesAtBootOnly();
+  await testV1TokenMigratesToV2();
   await testBasicAuth();
   await testBasicAuthRateLimit();
   await testTrustProxyRateLimitIsolation();
