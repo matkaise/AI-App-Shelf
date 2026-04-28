@@ -124,14 +124,17 @@ export default function App() {
 }
 ```
 
-AI App Shelf erkennt solche Snippets automatisch und lädt dafür React, ReactDOM, Babel und Tailwind im Sandbox-Frame. Einfache React/Tailwind-Apps funktionieren dadurch direkt.
+AI App Shelf erkennt solche Snippets automatisch. Beim Speichern versucht der Server zusätzlich, React-Apps mit `esbuild` zu einem Browser-Bundle zu bauen. Bare npm-Imports werden dabei über `esm.sh` aufgelöst, ohne dass zur Laufzeit `npm install` oder npm-Install-Skripte ausgeführt werden.
 
-Unterstützte Canvas-Imports werden im Sandbox-Frame über CDN-Module geladen:
+Wenn der Bundle-Build erfolgreich ist, nutzt `/run/:id` das gespeicherte Bundle. Wenn der Build fehlschlägt, deaktiviert ist oder die App keinen Default-Export hat, fällt AI App Shelf auf den Browser-Renderer mit React, Babel und Tailwind im Sandbox-Frame zurück.
 
-- `lucide-react`
-- `recharts`
+Das Bundler-MVP unterstützt Single-File-React-Apps mit öffentlichen Browser-tauglichen npm-Paketen. Lokale Projekt-Imports wie `@/components/ui/button`, Node-only-Pakete, native Addons und Multi-File-Projekte werden nicht automatisch aufgelöst.
 
-Beliebige npm-Pakete und lokale UI-Komponenten werden nicht automatisch gebündelt. Wenn eine Canvas-App andere Imports nutzt, zeigt der Editor einen Hinweis und entfernt diese Import-Zeilen aus der Vorschau.
+Du kannst den Bundler bei Bedarf deaktivieren:
+
+```bash
+ENABLE_BUNDLER=false npm start
+```
 
 ## Entwicklung
 

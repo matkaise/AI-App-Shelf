@@ -3,6 +3,7 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const esbuild = require("esbuild");
 const { isLikelyReactCanvasApp, renderRunnableApp, transformReactCanvasSource } = require("./public/render");
 
 const app = express();
@@ -10,6 +11,7 @@ const app = express();
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const DATA_DIR = process.env.DATA_DIR || "./data";
+const BUILD_DIR = process.env.BUILD_DIR || path.join(DATA_DIR, "build-cache");
 const APP_USERNAME = process.env.APP_USERNAME || "admin";
 const APP_PASSWORD = process.env.APP_PASSWORD || "";
 const ALLOW_UNAUTHENTICATED = process.env.ALLOW_UNAUTHENTICATED === "true";
@@ -19,6 +21,8 @@ const ENV_GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
 const TRUST_PROXY = process.env.TRUST_PROXY || "";
 const JSON_LIMIT = process.env.JSON_LIMIT || "15mb";
 const MAX_CODE_BYTES = Number.parseInt(process.env.MAX_CODE_BYTES || `${1024 * 1024 * 5}`, 10);
+const ENABLE_BUNDLER = process.env.ENABLE_BUNDLER !== "false";
+const BUNDLE_FETCH_TIMEOUT_MS = Number.parseInt(process.env.BUNDLE_FETCH_TIMEOUT_MS || "20000", 10) || 20000;
 const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_RATE_LIMIT_MAX = 30;
 const AUTH_RATE_LIMIT_MAX_BUCKETS = Math.max(
@@ -31,6 +35,7 @@ let cachedSecretKeySalt = "";
 let cachedSecretKey = null;
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(BUILD_DIR)) fs.mkdirSync(BUILD_DIR, { recursive: true });
 
 const db = new Database(path.join(DATA_DIR, "apps.db"));
 db.pragma("journal_mode = WAL");
@@ -46,6 +51,14 @@ db.exec(`
     code TEXT NOT NULL,
     thumbnail TEXT DEFAULT '',
     starred INTEGER DEFAULT 0,
+    run_mode TEXT DEFAULT 'auto',
+    bundle_hash TEXT DEFAULT '',
+    bundle_js TEXT DEFAULT '',
+    bundle_css TEXT DEFAULT '',
+    build_status TEXT DEFAULT 'idle',
+    build_error TEXT DEFAULT '',
+    build_dependencies TEXT DEFAULT '',
+    build_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -61,6 +74,14 @@ db.exec(`
 
 ensureColumn("apps", "thumbnail", "TEXT DEFAULT ''");
 ensureColumn("apps", "starred", "INTEGER DEFAULT 0");
+ensureColumn("apps", "run_mode", "TEXT DEFAULT 'auto'");
+ensureColumn("apps", "bundle_hash", "TEXT DEFAULT ''");
+ensureColumn("apps", "bundle_js", "TEXT DEFAULT ''");
+ensureColumn("apps", "bundle_css", "TEXT DEFAULT ''");
+ensureColumn("apps", "build_status", "TEXT DEFAULT 'idle'");
+ensureColumn("apps", "build_error", "TEXT DEFAULT ''");
+ensureColumn("apps", "build_dependencies", "TEXT DEFAULT ''");
+ensureColumn("apps", "build_at", "DATETIME");
 migrateStoredGithubToken();
 queueThumbnailBackfill();
 
@@ -446,6 +467,363 @@ function prepareStoredApp(appInput) {
   };
 }
 
+function publicAppFields() {
+  return [
+    "id",
+    "name",
+    "description",
+    "tags",
+    "thumbnail",
+    "code",
+    "starred",
+    "run_mode",
+    "build_status",
+    "build_error",
+    "build_dependencies",
+    "build_at",
+    "created_at",
+    "updated_at",
+  ].join(", ");
+}
+
+function detailAppFields() {
+  return [
+    "id",
+    "name",
+    "description",
+    "tags",
+    "code",
+    "starred",
+    "run_mode",
+    "build_status",
+    "build_error",
+    "build_dependencies",
+    "build_at",
+    "created_at",
+    "updated_at",
+  ].join(", ");
+}
+
+async function rebuildAppBundle(id) {
+  const row = db.prepare("SELECT id, code FROM apps WHERE id = ?").get(id);
+  if (!row) throw httpError(404, "App not found");
+  const result = await buildBundle(row.code);
+
+  db.prepare(
+    `UPDATE apps
+     SET bundle_hash = ?,
+         bundle_js = ?,
+         bundle_css = ?,
+         build_status = ?,
+         build_error = ?,
+         build_dependencies = ?,
+         build_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  ).run(
+    result.hash,
+    result.js,
+    result.css,
+    result.status,
+    result.error,
+    JSON.stringify(result.dependencies),
+    id
+  );
+
+  return db.prepare(`SELECT ${detailAppFields()} FROM apps WHERE id = ?`).get(id);
+}
+
+async function buildBundle(code) {
+  const dependencies = extractBarePackageImports(code);
+  const hash = crypto
+    .createHash("sha256")
+    .update("bundle-v1\0")
+    .update(code || "")
+    .digest("hex");
+
+  if (!ENABLE_BUNDLER) {
+    return {
+      hash,
+      js: "",
+      css: "",
+      status: "disabled",
+      error: "",
+      dependencies,
+    };
+  }
+
+  if (!isLikelyReactCanvasApp(code)) {
+    return {
+      hash,
+      js: "",
+      css: "",
+      status: "skipped",
+      error: "",
+      dependencies,
+    };
+  }
+
+  if (!/export\s+default\b/.test(code)) {
+    return {
+      hash,
+      js: "",
+      css: "",
+      status: "fallback",
+      error: "Bundler MVP needs a default React export. Browser renderer fallback will be used.",
+      dependencies,
+    };
+  }
+
+  try {
+    const built = await bundleReactApp(code, hash);
+    return {
+      hash,
+      js: built.js,
+      css: built.css,
+      status: "ready",
+      error: "",
+      dependencies,
+    };
+  } catch (err) {
+    return {
+      hash,
+      js: "",
+      css: "",
+      status: "error",
+      error: trimBuildError(err),
+      dependencies,
+    };
+  }
+}
+
+async function bundleReactApp(code, hash) {
+  const buildRoot = path.join(BUILD_DIR, hash);
+  const srcDir = path.join(buildRoot, "src");
+  fs.mkdirSync(srcDir, { recursive: true });
+
+  const appPath = path.join(srcDir, "App.jsx");
+  const entryPath = path.join(srcDir, "main.jsx");
+  fs.writeFileSync(appPath, code, "utf8");
+  fs.writeFileSync(
+    entryPath,
+    `import React from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App.jsx";
+
+createRoot(document.getElementById("root")).render(React.createElement(App));
+`,
+    "utf8"
+  );
+
+  const result = await esbuild.build({
+    absWorkingDir: buildRoot,
+    entryPoints: [entryPath],
+    bundle: true,
+    write: false,
+    format: "iife",
+    platform: "browser",
+    target: ["es2020"],
+    jsx: "automatic",
+    loader: {
+      ".js": "jsx",
+      ".jsx": "jsx",
+      ".ts": "ts",
+      ".tsx": "tsx",
+      ".css": "css",
+    },
+    plugins: [appShelfNpmPlugin()],
+    logLevel: "silent",
+  });
+
+  let js = "";
+  let css = "";
+  for (const file of result.outputFiles || []) {
+    if (file.path.endsWith(".css")) css += file.text;
+    else js += file.text;
+  }
+
+  return { js, css };
+}
+
+function appShelfNpmPlugin() {
+  return {
+    name: "app-shelf-npm",
+    setup(build) {
+      build.onResolve({ filter: /^react$/ }, () => ({ path: "react", namespace: "app-shelf-react" }));
+      build.onResolve({ filter: /^react\/jsx-runtime$/ }, () => ({ path: "react-jsx-runtime", namespace: "app-shelf-react" }));
+      build.onResolve({ filter: /^react\/jsx-dev-runtime$/ }, () => ({ path: "react-jsx-runtime", namespace: "app-shelf-react" }));
+      build.onResolve({ filter: /^react-dom\/client$/ }, () => ({ path: "react-dom-client", namespace: "app-shelf-react" }));
+      build.onResolve({ filter: /^react-dom$/ }, () => ({ path: "react-dom-client", namespace: "app-shelf-react" }));
+
+      build.onResolve({ filter: /^https?:\/\// }, (args) => ({ path: args.path, namespace: "http-url" }));
+      build.onResolve({ filter: /.*/, namespace: "http-url" }, (args) => {
+        if (args.path.startsWith("/")) return { path: `https://esm.sh${args.path}`, namespace: "http-url" };
+        if (/^https?:\/\//.test(args.path)) return { path: args.path, namespace: "http-url" };
+        if (args.path.startsWith(".") || args.path.startsWith("/")) {
+          return { path: new URL(args.path, args.importer).toString(), namespace: "http-url" };
+        }
+        return { path: npmToEsmUrl(args.path), namespace: "http-url" };
+      });
+
+      build.onResolve({ filter: /^[^./@][^:]*$|^@[^/]+\/[^/]+/ }, (args) => {
+        if (args.resolveDir || args.namespace === "file") return { path: npmToEsmUrl(args.path), namespace: "http-url" };
+        return null;
+      });
+
+      build.onLoad({ filter: /.*/, namespace: "app-shelf-react" }, (args) => {
+        if (args.path === "react-dom-client") {
+          return {
+            loader: "js",
+            contents: `const ReactDOM = window.ReactDOM;
+export const createRoot = ReactDOM.createRoot;
+export const hydrateRoot = ReactDOM.hydrateRoot;
+export default ReactDOM;`,
+          };
+        }
+
+        if (args.path === "react-jsx-runtime") {
+          return {
+            loader: "js",
+            contents: `const React = window.React;
+function jsx(type, props, key) {
+  return React.createElement(type, key === undefined ? props : { ...props, key });
+}
+export const Fragment = React.Fragment;
+export { jsx };
+export const jsxs = jsx;
+export const jsxDEV = jsx;`,
+          };
+        }
+
+        return {
+          loader: "js",
+          contents: `const React = window.React;
+export default React;
+export const Children = React.Children;
+export const Fragment = React.Fragment;
+export const StrictMode = React.StrictMode;
+export const Suspense = React.Suspense;
+export const cloneElement = React.cloneElement;
+export const createContext = React.createContext;
+export const createElement = React.createElement;
+export const forwardRef = React.forwardRef;
+export const isValidElement = React.isValidElement;
+export const lazy = React.lazy;
+export const memo = React.memo;
+export const startTransition = React.startTransition;
+export const useCallback = React.useCallback;
+export const useContext = React.useContext;
+export const useDebugValue = React.useDebugValue;
+export const useDeferredValue = React.useDeferredValue;
+export const useEffect = React.useEffect;
+export const useId = React.useId;
+export const useImperativeHandle = React.useImperativeHandle;
+export const useInsertionEffect = React.useInsertionEffect;
+export const useLayoutEffect = React.useLayoutEffect;
+export const useMemo = React.useMemo;
+export const useReducer = React.useReducer;
+export const useRef = React.useRef;
+export const useState = React.useState;
+export const useSyncExternalStore = React.useSyncExternalStore;
+export const useTransition = React.useTransition;`,
+        };
+      });
+
+      build.onLoad({ filter: /.*/, namespace: "http-url" }, async (args) => {
+        const response = await fetchWithTimeout(args.path);
+        const contents = await response.text();
+        const pathname = new URL(args.path).pathname;
+        const loader = pathname.endsWith(".css") ? "css" : "js";
+        return { contents, loader, resolveDir: args.path };
+      });
+    },
+  };
+}
+
+function npmToEsmUrl(specifier) {
+  return `https://esm.sh/${specifier}?bundle&external=react,react-dom`;
+}
+
+async function fetchWithTimeout(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BUNDLE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Could not fetch ${url}: ${response.status}`);
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractBarePackageImports(code) {
+  const packages = new Set();
+  const importPatterns = [
+    /\bimport\s+(?:[^"']+\s+from\s+)?["']([^"'.\/][^"']*)["']/g,
+    /\bimport\s*\(\s*["']([^"'.\/][^"']*)["']\s*\)/g,
+    /\brequire\s*\(\s*["']([^"'.\/][^"']*)["']\s*\)/g,
+  ];
+
+  for (const pattern of importPatterns) {
+    let match;
+    while ((match = pattern.exec(code || ""))) {
+      const pkg = packageNameFromSpecifier(match[1]);
+      if (pkg && !["react", "react-dom"].includes(pkg)) packages.add(pkg);
+    }
+  }
+
+  return [...packages].sort();
+}
+
+function packageNameFromSpecifier(specifier) {
+  const clean = String(specifier || "").trim();
+  if (!clean || clean.startsWith(".") || clean.startsWith("/") || clean.includes(":")) return "";
+  if (clean.startsWith("@")) return clean.split("/").slice(0, 2).join("/");
+  return clean.split("/")[0];
+}
+
+function trimBuildError(err) {
+  if (err && Array.isArray(err.errors) && err.errors.length) {
+    return err.errors
+      .slice(0, 5)
+      .map((item) => item.text || String(item))
+      .join("\n")
+      .slice(0, 4000);
+  }
+  return String(err && (err.stack || err.message) ? err.message : err).slice(0, 4000);
+}
+
+function renderBundledApp(row) {
+  return `<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI App Shelf Bundle</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <style>
+      html, body, #root { min-height: 100%; }
+      body { margin: 0; }
+      ${escapeStyleContent(row.bundle_css || "")}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+${escapeScriptContent(row.bundle_js || "")}
+    </script>
+  </body>
+</html>`;
+}
+
+function escapeStyleContent(value) {
+  return String(value).replace(/<\/style/gi, "<\\/style");
+}
+
+function escapeScriptContent(value) {
+  return String(value).replace(/<\/script/gi, "<\\/script").replace(/<!--/g, "<\\!--");
+}
+
 function buildAppThumbnail(appInput) {
   const renderMeta = getThumbnailRenderMeta(appInput.code || "");
   const seed = crypto
@@ -653,7 +1031,7 @@ app.get("/api/apps", (req, res) => {
   const limit = Math.min(Number.parseInt(req.query.limit || "100", 10) || 100, 500);
   const offset = Math.max(Number.parseInt(req.query.offset || "0", 10) || 0, 0);
 
-  const selectFields = "id, name, description, tags, thumbnail, code, starred, created_at, updated_at";
+  const selectFields = publicAppFields();
   const rows = search
     ? db
         .prepare(
@@ -680,36 +1058,52 @@ app.get("/api/apps", (req, res) => {
 
 app.get("/api/apps/:id", (req, res) => {
   const row = db
-    .prepare("SELECT id, name, description, tags, code, starred, created_at, updated_at FROM apps WHERE id = ?")
+    .prepare(`SELECT ${detailAppFields()} FROM apps WHERE id = ?`)
     .get(req.params.id);
   if (!row) throw httpError(404, "App not found");
   res.json(row);
 });
 
-app.post("/api/apps", (req, res) => {
-  const body = getBodyObject(req);
-  const appInput = prepareStoredApp(normalizeAppInput(body));
-  const starred = body.starred ? 1 : 0;
-  const result = db
-    .prepare("INSERT INTO apps (name, description, tags, code, thumbnail, starred) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred);
+app.post(
+  "/api/apps",
+  asyncRoute(async (req, res) => {
+    const body = getBodyObject(req);
+    const appInput = prepareStoredApp(normalizeAppInput(body));
+    const starred = body.starred ? 1 : 0;
+    const result = db
+      .prepare("INSERT INTO apps (name, description, tags, code, thumbnail, starred) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred);
 
-  res.status(201).json(db.prepare("SELECT * FROM apps WHERE id = ?").get(result.lastInsertRowid));
-});
+    const saved = await rebuildAppBundle(result.lastInsertRowid);
+    res.status(201).json(db.prepare(`SELECT ${publicAppFields()} FROM apps WHERE id = ?`).get(saved.id));
+  })
+);
 
-app.put("/api/apps/:id", (req, res) => {
-  const existing = db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id);
-  if (!existing) throw httpError(404, "App not found");
+app.put(
+  "/api/apps/:id",
+  asyncRoute(async (req, res) => {
+    const existing = db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id);
+    if (!existing) throw httpError(404, "App not found");
 
-  const body = getBodyObject(req);
-  const appInput = prepareStoredApp(normalizeAppInput(body, existing));
-  const starred = Object.hasOwn(body, "starred") ? (body.starred ? 1 : 0) : (existing.starred ?? 0);
-  db.prepare(
-    "UPDATE apps SET name = ?, description = ?, tags = ?, code = ?, thumbnail = ?, starred = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-  ).run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred, req.params.id);
+    const body = getBodyObject(req);
+    const appInput = prepareStoredApp(normalizeAppInput(body, existing));
+    const starred = Object.hasOwn(body, "starred") ? (body.starred ? 1 : 0) : (existing.starred ?? 0);
+    db.prepare(
+      "UPDATE apps SET name = ?, description = ?, tags = ?, code = ?, thumbnail = ?, starred = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, starred, req.params.id);
 
-  res.json(db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id));
-});
+    const saved = await rebuildAppBundle(req.params.id);
+    res.json(db.prepare(`SELECT ${publicAppFields()} FROM apps WHERE id = ?`).get(saved.id));
+  })
+);
+
+app.post(
+  "/api/apps/:id/build",
+  asyncRoute(async (req, res) => {
+    const appRow = await rebuildAppBundle(req.params.id);
+    res.json({ ok: true, app: appRow });
+  })
+);
 
 app.post("/api/apps/:id/star", (req, res) => {
   const row = db.prepare("SELECT starred FROM apps WHERE id = ?").get(req.params.id);
@@ -726,8 +1120,38 @@ app.delete("/api/apps/:id", (req, res) => {
 });
 
 app.get("/run/:id", (req, res) => {
-  const row = db.prepare("SELECT code FROM apps WHERE id = ?").get(req.params.id);
+  const row = db
+    .prepare("SELECT code, bundle_js, bundle_css, build_status FROM apps WHERE id = ?")
+    .get(req.params.id);
   if (!row) return res.status(404).send("App not found");
+
+  if (row.build_status === "ready" && row.bundle_js) {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-App-Shelf-Source-Type", "bundle");
+    res.setHeader(
+      "Content-Security-Policy",
+      [
+        "default-src 'none'",
+        "script-src 'unsafe-inline' https:",
+        "style-src 'unsafe-inline' https:",
+        "img-src data: blob: https:",
+        "font-src data: https:",
+        "media-src data: blob: https:",
+        "connect-src https:",
+        "frame-src https:",
+        "worker-src blob:",
+        "child-src blob: https:",
+        "manifest-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock",
+      ].join("; ")
+    );
+    res.send(renderBundledApp(row));
+    return;
+  }
+
   const rendered = renderRunnableApp(row.code);
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -844,7 +1268,20 @@ app.post(
     db.transaction((apps) => {
       const findByName = db.prepare("SELECT id FROM apps WHERE name = ?");
       const updateApp = db.prepare(
-        "UPDATE apps SET description = ?, tags = ?, code = ?, thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        `UPDATE apps
+         SET description = ?,
+             tags = ?,
+             code = ?,
+             thumbnail = ?,
+             bundle_hash = '',
+             bundle_js = '',
+             bundle_css = '',
+             build_status = 'idle',
+             build_error = '',
+             build_dependencies = '[]',
+             build_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
       );
       const insertApp = db.prepare(
         "INSERT INTO apps (name, description, tags, code, thumbnail) VALUES (?, ?, ?, ?, ?)"

@@ -164,17 +164,39 @@ export default function App() {
     });
     expect(createResponse.status === 201, `create failed: ${createResponse.status}`);
     expect(app.thumbnail.startsWith("data:image/svg+xml;base64,"), "created app should include a static thumbnail");
+    expect(app.build_status === "ready", `react app should build a bundle, got ${app.build_status}: ${app.build_error || ""}`);
 
     const detail = await fetch(`${server.base}/api/apps/${app.id}`).then((res) => res.json());
     expect(detail.code.includes("useState"), "app detail should include code for editing");
     expect(!Object.hasOwn(detail, "thumbnail"), "app detail should omit thumbnail payload");
 
     const run = await fetch(`${server.base}/run/${app.id}`);
-    expect(run.headers.get("x-app-shelf-source-type") === "react", "react source type not detected");
+    expect(run.headers.get("x-app-shelf-source-type") === "bundle", "bundle source type not detected");
     expect(!run.headers.get("content-security-policy").includes("frame-ancestors"), "run CSP should remain embeddable");
     const rendered = await run.text();
-    expect(rendered.includes("https://esm.sh/react@18.3.1"), "react import map missing");
+    expect(rendered.includes("AI App Shelf Bundle"), "bundled document missing");
     expect(!rendered.includes("import React"), "react import was not stripped");
+
+    const dependencyCode = `import React from "react";
+import { format } from "date-fns";
+
+export default function App() {
+  return <div>{format(new Date(0), "yyyy")}</div>;
+}`;
+    const { response: dependencyCreateResponse, body: dependencyApp } = await requestJson(`${server.base}/api/apps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App-Shelf-Request": "1" },
+      body: JSON.stringify({ name: "Bundled Dependency", tags: "bundle", code: dependencyCode }),
+    });
+    expect(dependencyCreateResponse.status === 201, `dependency app create failed: ${dependencyCreateResponse.status}`);
+    expect(
+      dependencyApp.build_status === "ready",
+      `dependency app should bundle, got ${dependencyApp.build_status}: ${dependencyApp.build_error || ""}`
+    );
+    expect(dependencyApp.build_dependencies.includes("date-fns"), "dependency list should include date-fns");
+
+    const dependencyRun = await fetch(`${server.base}/run/${dependencyApp.id}`);
+    expect(dependencyRun.headers.get("x-app-shelf-source-type") === "bundle", "dependency bundle source type not detected");
 
     const settings = await fetch(`${server.base}/api/settings`).then((res) => res.json());
     expect(!Object.hasOwn(settings, "githubToken"), "settings leaked githubToken");

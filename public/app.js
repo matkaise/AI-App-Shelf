@@ -218,20 +218,13 @@ function buildCard(app) {
 
   const thumb = el('div', 'card-thumb');
 
-  if (app.code && app.code.trim()) {
+  if (app.id) {
     const iframe = document.createElement('iframe');
     iframe.sandbox = 'allow-scripts';
     iframe.title = app.name;
     iframe.loading = 'lazy';
     iframe.style.cssText = 'position:absolute;top:0;left:0;width:960px;height:600px;border:none;transform-origin:0 0;pointer-events:none;background:#fff;';
-    try {
-      const rendered = window.AppShelfRenderer
-        ? AppShelfRenderer.renderRunnableApp(app.code).html
-        : app.code;
-      iframe.srcdoc = rendered;
-    } catch (e) {
-      iframe.srcdoc = app.code;
-    }
+    iframe.src = `/run/${app.id}`;
     thumb.append(iframe);
   } else if (app.thumbnail) {
     const img = document.createElement('img');
@@ -332,14 +325,7 @@ async function openRunner(app) {
   frame.className = 'runner-frame';
   frame.sandbox = 'allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock';
   frame.title = fullApp.name;
-  try {
-    const rendered = window.AppShelfRenderer
-      ? AppShelfRenderer.renderRunnableApp(fullApp.code || '').html
-      : (fullApp.code || '');
-    frame.srcdoc = rendered;
-  } catch (e) {
-    frame.srcdoc = fullApp.code || '';
-  }
+  frame.src = `/run/${fullApp.id}`;
 
   win.append(chrome, frame);
   backdrop.append(win);
@@ -595,18 +581,27 @@ async function doSaveApp() {
   if (saveBtn) { saveBtn.textContent = 'Saving…'; saveBtn.disabled = true; }
 
   try {
+    let saved;
     if (S.editingApp) {
-      await api(`/api/apps/${S.editingApp.id}`, { method: 'PUT', body: payload });
+      saved = await api(`/api/apps/${S.editingApp.id}`, { method: 'PUT', body: payload });
     } else {
-      await api('/api/apps', { method: 'POST', body: payload });
+      saved = await api('/api/apps', { method: 'POST', body: payload });
     }
     closeUploadFlow();
-    showToast('Saved.');
+    showToast(saveMessage(saved));
     await loadApps();
   } catch (err) {
     showToast(err.message, true);
     if (saveBtn) { saveBtn.textContent = S.editingApp ? 'Save changes' : 'Save to shelf'; saveBtn.disabled = false; }
   }
+}
+
+function saveMessage(app) {
+  if (!app) return 'Saved.';
+  if (app.build_status === 'ready') return 'Saved. Bundle ready.';
+  if (app.build_status === 'error') return 'Saved. Bundle failed, browser fallback active.';
+  if (app.build_status === 'fallback') return 'Saved. Browser fallback active.';
+  return 'Saved.';
 }
 
 function closeUploadFlow() {
