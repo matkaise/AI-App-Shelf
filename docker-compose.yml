@@ -13,6 +13,7 @@ services:
       PORT: 3000
       APP_USERNAME: ${APP_USERNAME:-admin}
       APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env before starting AI App Shelf}
+      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env before starting AI App Shelf}
       # ALLOW_UNAUTHENTICATED: "true"
       # GITHUB_TOKEN: ghp_xxx
     security_opt:

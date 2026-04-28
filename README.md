@@ -6,7 +6,7 @@ Zentrale Ablage für KI-generierte Single-File-HTML-Apps aus ChatGPT Canvas, Cla
 
 - Apps als vollständigen HTML-Code speichern
 - React/JSX-Code aus ChatGPT Canvas automatisch ausführen
-- Galerie mit isolierten Live-Vorschauen
+- Galerie mit statischen Thumbnails und isolierter Live-Vorschau im Editor
 - Editor mit Entwurfs-Vorschau
 - Suche über Name, Beschreibung und Tags
 - Optionaler GitHub-Sync über eine `apps.json`
@@ -20,11 +20,12 @@ Lege zuerst eine `.env` neben deiner `docker-compose.yml` an:
 ```env
 APP_USERNAME=admin
 APP_PASSWORD=bitte-ein-langes-passwort-setzen
+APP_SECRET=bitte-einen-langen-zufaelligen-secret-setzen
 PUID=1000
 PGID=1000
 ```
 
-Auf einem NAS kannst du `PUID` und `PGID` auf die UID/GID deines NAS-Benutzers setzen, damit `./data` beschreibbar bleibt.
+`APP_SECRET` wird verwendet, um in der Oberfläche gespeicherte GitHub-Tokens verschlüsselt in SQLite abzulegen. Auf einem NAS kannst du `PUID` und `PGID` auf die UID/GID deines NAS-Benutzers setzen, damit `./data` beschreibbar bleibt.
 
 Speichere dann diese `docker-compose.yml`:
 
@@ -44,6 +45,7 @@ services:
       PORT: 3000
       APP_USERNAME: ${APP_USERNAME:-admin}
       APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env before starting AI App Shelf}
+      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env before starting AI App Shelf}
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -89,7 +91,9 @@ environment:
 
 Wenn `GITHUB_TOKEN` gesetzt ist, wird dieser Token bevorzugt verwendet und nicht an die Oberfläche zurückgegeben.
 
-Wenn du den Token in der Oberfläche einträgst, wird er in SQLite gespeichert. Behandle `./data/apps.db` und Backups davon entsprechend wie ein Geheimnis.
+Wenn du den Token in der Oberfläche einträgst, wird er mit `APP_SECRET` verschlüsselt in SQLite gespeichert. Ohne `APP_SECRET` lehnt die App das Speichern eines Tokens ab. Behandle `./data/apps.db`, deinen `APP_SECRET` und Backups davon trotzdem wie Geheimnisse.
+
+Alte Klartext-Tokens werden beim nächsten Zugriff automatisch verschlüsselt, sobald `APP_SECRET` gesetzt ist. Wenn du bewusst weiter Klartext erlauben willst, geht das nur explizit mit `ALLOW_PLAINTEXT_SECRETS=true`.
 
 ## Sicherheit
 
@@ -130,13 +134,14 @@ PowerShell:
 
 ```powershell
 $env:APP_PASSWORD = "dev-password"
+$env:APP_SECRET = "dev-secret"
 npm start
 ```
 
 Bash:
 
 ```bash
-APP_PASSWORD=dev-password npm start
+APP_PASSWORD=dev-password APP_SECRET=dev-secret npm start
 ```
 
 Standard-Port:

@@ -13,6 +13,8 @@ const DATA_DIR = process.env.DATA_DIR || "./data";
 const APP_USERNAME = process.env.APP_USERNAME || "admin";
 const APP_PASSWORD = process.env.APP_PASSWORD || "";
 const ALLOW_UNAUTHENTICATED = process.env.ALLOW_UNAUTHENTICATED === "true";
+const APP_SECRET = process.env.APP_SECRET || "";
+const ALLOW_PLAINTEXT_SECRETS = process.env.ALLOW_PLAINTEXT_SECRETS === "true";
 const ENV_GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
 const JSON_LIMIT = process.env.JSON_LIMIT || "15mb";
 const MAX_CODE_BYTES = Number.parseInt(process.env.MAX_CODE_BYTES || `${1024 * 1024 * 5}`, 10);
@@ -31,6 +33,7 @@ db.exec(`
     description TEXT DEFAULT '',
     tags TEXT DEFAULT '',
     code TEXT NOT NULL,
+    thumbnail TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -43,6 +46,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_apps_updated_at ON apps(updated_at);
   CREATE INDEX IF NOT EXISTS idx_apps_name ON apps(name);
 `);
+
+ensureColumn("apps", "thumbnail", "TEXT DEFAULT ''");
+backfillMissingThumbnails();
 
 app.disable("x-powered-by");
 app.use((req, res, next) => {
@@ -141,6 +147,132 @@ function deleteSetting(key) {
   db.prepare("DELETE FROM settings WHERE key = ?").run(key);
 }
 
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (columns.some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+function encryptSecret(value) {
+  if (!APP_SECRET) throw httpError(400, "Set APP_SECRET before storing secrets in the database");
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", secretKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
+}
+
+function decryptSecret(value) {
+  if (!APP_SECRET) throw new Error("APP_SECRET is required to decrypt this secret");
+  const [prefix, version, ivText, tagText, ciphertextText] = String(value).split(":");
+  if (prefix !== "enc" || version !== "v1" || !ivText || !tagText || !ciphertextText) {
+    throw new Error("Unsupported encrypted secret format");
+  }
+
+  const decipher = crypto.createDecipheriv("aes-256-gcm", secretKey(), Buffer.from(ivText, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(ciphertextText, "base64url")),
+    decipher.final(),
+  ]).toString("utf8");
+}
+
+function secretKey() {
+  return crypto.createHash("sha256").update(APP_SECRET).digest();
+}
+
+function isEncryptedSecret(value) {
+  return String(value || "").startsWith("enc:v1:");
+}
+
+function readStoredGithubToken() {
+  const stored = getSetting("githubToken") || "";
+  if (!stored) {
+    return {
+      token: "",
+      configured: false,
+      usable: false,
+      source: "none",
+      storage: "none",
+      needsSecret: false,
+    };
+  }
+
+  if (isEncryptedSecret(stored)) {
+    if (!APP_SECRET) {
+      return {
+        token: "",
+        configured: true,
+        usable: false,
+        source: "database-locked",
+        storage: "encrypted",
+        needsSecret: true,
+      };
+    }
+
+    try {
+      const token = decryptSecret(stored);
+      return {
+        token,
+        configured: true,
+        usable: true,
+        source: "database",
+        storage: "encrypted",
+        needsSecret: false,
+      };
+    } catch {
+      return {
+        token: "",
+        configured: true,
+        usable: false,
+        source: "database-locked",
+        storage: "encrypted",
+        needsSecret: true,
+      };
+    }
+  }
+
+  if (!APP_SECRET) {
+    return {
+      token: ALLOW_PLAINTEXT_SECRETS ? stored : "",
+      configured: true,
+      usable: ALLOW_PLAINTEXT_SECRETS,
+      source: ALLOW_PLAINTEXT_SECRETS ? "database-plaintext" : "database-locked",
+      storage: "plaintext",
+      needsSecret: !ALLOW_PLAINTEXT_SECRETS,
+    };
+  }
+
+  setSetting("githubToken", encryptSecret(stored));
+  return {
+    token: stored,
+    configured: true,
+    usable: true,
+    source: "database",
+    storage: "encrypted",
+    needsSecret: false,
+  };
+}
+
+function storeGithubToken(token) {
+  if (!token) {
+    deleteSetting("githubToken");
+    return;
+  }
+
+  if (APP_SECRET) {
+    setSetting("githubToken", encryptSecret(token));
+    return;
+  }
+
+  if (ALLOW_PLAINTEXT_SECRETS) {
+    setSetting("githubToken", token);
+    return;
+  }
+
+  throw httpError(400, "Set APP_SECRET or GITHUB_TOKEN before saving a GitHub token");
+}
+
 function cleanString(value, fallback, maxLength) {
   if (value === undefined || value === null) return fallback;
   if (typeof value !== "string") throw httpError(400, "Invalid text field");
@@ -181,6 +313,105 @@ function normalizeAppInput(body, existing = {}) {
   return { name, description, tags, code };
 }
 
+function prepareStoredApp(appInput) {
+  return {
+    ...appInput,
+    thumbnail: buildAppThumbnail(appInput),
+  };
+}
+
+function buildAppThumbnail(appInput) {
+  const rendered = renderRunnableApp(appInput.code || "");
+  const seed = crypto
+    .createHash("sha256")
+    .update(`${appInput.name || ""}|${appInput.tags || ""}`)
+    .digest();
+  const palettes = [
+    ["#f7faf8", "#0b766d", "#d6f0ec", "#1f2f38"],
+    ["#fbfaf4", "#916b1f", "#f0e6c8", "#263036"],
+    ["#f8f7fb", "#6d5bd0", "#e4ddfb", "#263036"],
+    ["#f7fafc", "#246a9b", "#d9ecf7", "#24323a"],
+    ["#fbf7f7", "#b24b55", "#f3d9dc", "#2e2b2c"],
+  ];
+  const palette = palettes[seed[0] % palettes.length];
+  const title = truncateText(appInput.name || "Untitled App", 42);
+  const description = truncateText(appInput.description || "AI App Shelf", 78);
+  const tags = splitTagText(appInput.tags).slice(0, 3);
+  const typeLabel = rendered.type === "react" ? "React" : "HTML";
+  const warningLabel = rendered.warnings && rendered.warnings.length ? `${rendered.warnings.length} Hinweise` : "";
+
+  const tagSvg = tags
+    .map((tag, index) => {
+      const x = 56 + index * 156;
+      return `<g transform="translate(${x} 404)"><rect width="138" height="34" rx="17" fill="#ffffff" opacity="0.82"/><text x="16" y="22" font-size="14" font-weight="700" fill="${palette[3]}">${escapeXml(
+        truncateText(tag, 16)
+      )}</text></g>`;
+    })
+    .join("");
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="${palette[0]}"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="540" fill="url(#bg)"/>
+  <rect x="34" y="34" width="892" height="472" rx="28" fill="#ffffff" stroke="#dce4df" stroke-width="2"/>
+  <rect x="56" y="58" width="848" height="160" rx="20" fill="${palette[2]}"/>
+  <circle cx="814" cy="118" r="44" fill="${palette[1]}" opacity="0.18"/>
+  <circle cx="858" cy="156" r="72" fill="${palette[1]}" opacity="0.1"/>
+  <rect x="80" y="84" width="96" height="96" rx="24" fill="${palette[1]}"/>
+  <text x="128" y="143" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="30" font-weight="800" fill="#ffffff">${escapeXml(
+    typeLabel
+  )}</text>
+  <text x="56" y="286" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="40" font-weight="800" fill="${palette[3]}">${escapeXml(
+    title
+  )}</text>
+  <text x="56" y="334" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="500" fill="#62706a">${escapeXml(
+    description
+  )}</text>
+  ${tagSvg}
+  <text x="56" y="474" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="800" fill="${palette[1]}">${escapeXml(
+    warningLabel || "AI App Shelf"
+  )}</text>
+</svg>`;
+
+  return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
+}
+
+function splitTagText(value) {
+  return String(value || "")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1)).trim()}...` : text;
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function backfillMissingThumbnails() {
+  const rows = db
+    .prepare("SELECT id, name, description, tags, code FROM apps WHERE thumbnail IS NULL OR thumbnail = ''")
+    .all();
+  if (!rows.length) return;
+
+  const update = db.prepare("UPDATE apps SET thumbnail = ? WHERE id = ?");
+  db.transaction((apps) => {
+    for (const appInput of apps) update.run(buildAppThumbnail(appInput), appInput.id);
+  })(rows);
+}
+
 function normalizeRepo(repo) {
   const cleaned = cleanString(repo, "", 160);
   if (!cleaned) return "";
@@ -215,10 +446,15 @@ function encodeContentPath(filePath) {
 }
 
 function getGithubConfig() {
-  const storedToken = getSetting("githubToken") || "";
+  const storedToken = readStoredGithubToken();
+  const hasEnvToken = Boolean(ENV_GITHUB_TOKEN);
   return {
-    token: ENV_GITHUB_TOKEN || storedToken,
-    tokenSource: ENV_GITHUB_TOKEN ? "environment" : storedToken ? "database" : "none",
+    token: ENV_GITHUB_TOKEN || storedToken.token,
+    tokenConfigured: hasEnvToken || storedToken.configured,
+    tokenUsable: hasEnvToken || storedToken.usable,
+    tokenSource: hasEnvToken ? "environment" : storedToken.source,
+    tokenStorage: hasEnvToken ? "environment" : storedToken.storage,
+    tokenNeedsSecret: !hasEnvToken && storedToken.needsSecret,
     repo: getSetting("githubRepo") || "",
     branch: getSetting("githubBranch") || "main",
     file: getSetting("githubFile") || "apps.json",
@@ -275,7 +511,7 @@ app.get("/api/apps", (req, res) => {
   const limit = Math.min(Number.parseInt(req.query.limit || "100", 10) || 100, 500);
   const offset = Math.max(Number.parseInt(req.query.offset || "0", 10) || 0, 0);
 
-  const selectFields = "id, name, description, tags, created_at, updated_at";
+  const selectFields = "id, name, description, tags, thumbnail, created_at, updated_at";
   const rows = search
     ? db
         .prepare(
@@ -307,10 +543,10 @@ app.get("/api/apps/:id", (req, res) => {
 });
 
 app.post("/api/apps", (req, res) => {
-  const appInput = normalizeAppInput(getBodyObject(req));
+  const appInput = prepareStoredApp(normalizeAppInput(getBodyObject(req)));
   const result = db
-    .prepare("INSERT INTO apps (name, description, tags, code) VALUES (?, ?, ?, ?)")
-    .run(appInput.name, appInput.description, appInput.tags, appInput.code);
+    .prepare("INSERT INTO apps (name, description, tags, code, thumbnail) VALUES (?, ?, ?, ?, ?)")
+    .run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail);
 
   res.status(201).json(db.prepare("SELECT * FROM apps WHERE id = ?").get(result.lastInsertRowid));
 });
@@ -319,10 +555,10 @@ app.put("/api/apps/:id", (req, res) => {
   const existing = db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id);
   if (!existing) throw httpError(404, "App not found");
 
-  const appInput = normalizeAppInput(getBodyObject(req), existing);
+  const appInput = prepareStoredApp(normalizeAppInput(getBodyObject(req), existing));
   db.prepare(
-    "UPDATE apps SET name = ?, description = ?, tags = ?, code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-  ).run(appInput.name, appInput.description, appInput.tags, appInput.code, req.params.id);
+    "UPDATE apps SET name = ?, description = ?, tags = ?, code = ?, thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+  ).run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail, req.params.id);
 
   res.json(db.prepare("SELECT * FROM apps WHERE id = ?").get(req.params.id));
 });
@@ -341,6 +577,9 @@ app.get("/run/:id", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-App-Shelf-Source-Type", rendered.type);
+  if (rendered.warnings && rendered.warnings.length) {
+    res.setHeader("X-App-Shelf-Render-Warnings", String(rendered.warnings.length));
+  }
   res.setHeader(
     "Content-Security-Policy",
     [
@@ -369,8 +608,11 @@ app.get("/api/settings", (req, res) => {
     githubRepo: cfg.repo,
     githubBranch: cfg.branch,
     githubFile: cfg.file,
-    githubTokenConfigured: Boolean(cfg.token),
+    githubTokenConfigured: cfg.tokenConfigured,
+    githubTokenUsable: cfg.tokenUsable,
     githubTokenSource: cfg.tokenSource,
+    githubTokenStorage: cfg.tokenStorage,
+    githubTokenNeedsSecret: cfg.tokenNeedsSecret,
     authConfigured: Boolean(APP_PASSWORD),
     authRequired: !ALLOW_UNAUTHENTICATED,
   });
@@ -384,8 +626,7 @@ app.put("/api/settings", (req, res) => {
 
   if (Object.hasOwn(body, "githubToken")) {
     const token = cleanString(body.githubToken, "", 400);
-    if (token) setSetting("githubToken", token);
-    else deleteSetting("githubToken");
+    storeGithubToken(token);
   }
 
   res.json({ ok: true });
@@ -447,17 +688,20 @@ app.post(
     db.transaction((apps) => {
       const findByName = db.prepare("SELECT id FROM apps WHERE name = ?");
       const updateApp = db.prepare(
-        "UPDATE apps SET description = ?, tags = ?, code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        "UPDATE apps SET description = ?, tags = ?, code = ?, thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
       );
-      const insertApp = db.prepare("INSERT INTO apps (name, description, tags, code) VALUES (?, ?, ?, ?)");
+      const insertApp = db.prepare(
+        "INSERT INTO apps (name, description, tags, code, thumbnail) VALUES (?, ?, ?, ?, ?)"
+      );
 
       for (const remoteApp of apps) {
+        const appInput = prepareStoredApp(remoteApp);
         const existing = findByName.get(remoteApp.name);
         if (existing) {
-          updateApp.run(remoteApp.description, remoteApp.tags, remoteApp.code, existing.id);
+          updateApp.run(appInput.description, appInput.tags, appInput.code, appInput.thumbnail, existing.id);
           updated++;
         } else {
-          insertApp.run(remoteApp.name, remoteApp.description, remoteApp.tags, remoteApp.code);
+          insertApp.run(appInput.name, appInput.description, appInput.tags, appInput.code, appInput.thumbnail);
           added++;
         }
       }

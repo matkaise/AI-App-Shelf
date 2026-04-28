@@ -5,10 +5,15 @@
 })(typeof globalThis !== "undefined" ? globalThis : window, function () {
   function renderRunnableApp(code) {
     if (isLikelyReactCanvasApp(code)) {
-      return { type: "react", html: buildReactCanvasHtml(code) };
+      const transformed = transformReactCanvasSource(code);
+      return {
+        type: "react",
+        html: buildReactCanvasHtmlFromTransformed(transformed),
+        warnings: transformed.warnings,
+      };
     }
 
-    return { type: "html", html: code || "<!doctype html><html><body></body></html>" };
+    return { type: "html", html: code || "<!doctype html><html><body></body></html>", warnings: [] };
   }
 
   function isLikelyReactCanvasApp(code) {
@@ -24,6 +29,10 @@
 
   function buildReactCanvasHtml(source) {
     const transformed = transformReactCanvasSource(source);
+    return buildReactCanvasHtmlFromTransformed(transformed);
+  }
+
+  function buildReactCanvasHtmlFromTransformed(transformed) {
     const candidateChecks = transformed.componentNames
       .map((name) => `(typeof ${name} !== "undefined" ? ${name} : null)`)
       .join(",\n        ");
@@ -102,13 +111,9 @@ ${escapeScriptContent(transformed.code)}
   function transformReactCanvasSource(source) {
     let code = String(source || "").trim();
     let defaultComponent = null;
+    const warnings = [];
 
-    code = code
-      .replace(/^\s*import\s+(?:React\s*,\s*)?\{[^}]*\}\s+from\s+["']react["'];?\s*$/gm, "")
-      .replace(/^\s*import\s+React\s+from\s+["']react["'];?\s*$/gm, "")
-      .replace(/^\s*import\s+[^;\n]+;?\s*$/gm, (line) => {
-        return `/* Unsupported import removed by AI App Shelf: ${line.replace(/\*\//g, "* /")} */`;
-      });
+    code = stripImportStatements(code, warnings);
 
     code = code.replace(/export\s+default\s+function\s+([A-Za-z_$][\w$]*)\s*\(/, (match, name) => {
       defaultComponent = name;
@@ -125,6 +130,21 @@ ${escapeScriptContent(transformed.code)}
       return "";
     });
 
+    code = code.replace(/export\s+default\s+((?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*))\s*=>/g, (match, params) => {
+      defaultComponent = "App";
+      return `const App = ${params} =>`;
+    });
+
+    code = code.replace(/export\s+\*\s+from\s+["'][^"']+["'];?/g, (statement) => {
+      warnings.push(`Unsupported export removed: ${compactStatement(statement)}`);
+      return `/* Unsupported export removed by AI App Shelf: ${safeComment(statement)} */`;
+    });
+
+    code = code.replace(/export\s+\{[^}]*\}\s+from\s+["'][^"']+["'];?/g, (statement) => {
+      warnings.push(`Unsupported re-export removed: ${compactStatement(statement)}`);
+      return `/* Unsupported re-export removed by AI App Shelf: ${safeComment(statement)} */`;
+    });
+
     code = code
       .replace(/export\s+(function|class)\s+/g, "$1 ")
       .replace(/export\s+(const|let|var)\s+/g, "$1 ")
@@ -138,7 +158,66 @@ ${escapeScriptContent(transformed.code)}
     return {
       code,
       componentNames: [...new Set(componentNames.filter((name) => /^[A-Za-z_$][\w$]*$/.test(name)))],
+      warnings: [...new Set(warnings)],
     };
+  }
+
+  function stripImportStatements(source, warnings) {
+    const lines = String(source || "").split(/\r?\n/);
+    const kept = [];
+    let importLines = null;
+
+    for (const line of lines) {
+      if (importLines) {
+        importLines.push(line);
+        if (endsImportStatement(line)) {
+          keepOrWarnImport(importLines.join("\n"), kept, warnings);
+          importLines = null;
+        }
+        continue;
+      }
+
+      if (/^\s*import\b/.test(line)) {
+        importLines = [line];
+        if (endsImportStatement(line)) {
+          keepOrWarnImport(importLines.join("\n"), kept, warnings);
+          importLines = null;
+        }
+        continue;
+      }
+
+      kept.push(line);
+    }
+
+    if (importLines) keepOrWarnImport(importLines.join("\n"), kept, warnings);
+    return kept.join("\n");
+  }
+
+  function endsImportStatement(line) {
+    const trimmed = String(line || "").trim();
+    return (
+      /;\s*$/.test(trimmed) ||
+      /^import\s+["'][^"']+["']\s*$/.test(trimmed) ||
+      /\sfrom\s+["'][^"']+["']\s*$/.test(trimmed)
+    );
+  }
+
+  function keepOrWarnImport(statement, kept, warnings) {
+    const normalized = compactStatement(statement);
+    if (/^import\s+.+\s+from\s+["']react["'];?$/.test(normalized) || /^import\s+["']react["'];?$/.test(normalized)) {
+      return;
+    }
+
+    warnings.push(`Unsupported import removed: ${normalized}`);
+    kept.push(`/* Unsupported import removed by AI App Shelf: ${safeComment(statement)} */`);
+  }
+
+  function compactStatement(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function safeComment(value) {
+    return compactStatement(value).replace(/\*\//g, "* /");
   }
 
   function guessReactComponentNames(code) {

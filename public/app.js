@@ -86,6 +86,7 @@ function bindElements() {
     "deleteBtn",
     "previewFrame",
     "previewState",
+    "renderWarnings",
     "settingsDialog",
     "settingsForm",
     "closeSettingsBtn",
@@ -220,13 +221,12 @@ function renderApps() {
     const preview = document.createElement("div");
     preview.className = "card-preview";
 
-    const frame = document.createElement("iframe");
-    frame.title = `${app.name} Vorschau`;
-    frame.loading = "lazy";
-    frame.referrerPolicy = "no-referrer";
-    frame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock");
-    frame.src = `/run/${app.id}`;
-    preview.append(frame);
+    const image = document.createElement("img");
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.src = thumbnailForApp(app);
+    preview.append(image);
 
     const body = document.createElement("div");
     body.className = "card-body";
@@ -269,6 +269,32 @@ function renderApps() {
 function updateCount() {
   const count = state.apps.length;
   els.appCount.textContent = `${count} ${count === 1 ? "App" : "Apps"}`;
+}
+
+function upsertAppInList(app) {
+  const index = state.apps.findIndex((item) => item.id === app.id);
+  const matches = appMatchesSearch(app, state.search);
+
+  if (!matches) {
+    if (index >= 0) state.apps.splice(index, 1);
+  } else if (index >= 0) {
+    state.apps[index] = app;
+  } else {
+    state.apps.unshift(app);
+  }
+
+  state.apps.sort((left, right) => {
+    const leftTime = Date.parse(String(left.updated_at || "").replace(" ", "T")) || 0;
+    const rightTime = Date.parse(String(right.updated_at || "").replace(" ", "T")) || 0;
+    return rightTime - leftTime || right.id - left.id;
+  });
+  updateCount();
+}
+
+function appMatchesSearch(app, search) {
+  const query = String(search || "").trim().toLowerCase();
+  if (!query) return true;
+  return [app.name, app.description, app.tags].join(" ").toLowerCase().includes(query);
 }
 
 function fillEditor(app) {
@@ -336,7 +362,7 @@ async function saveCurrentApp(event) {
       : await api("/api/apps", { method: "POST", body: payload });
 
     showToast("Gespeichert.");
-    await loadApps();
+    upsertAppInList(saved);
     fillEditor(saved);
   } catch (err) {
     showToast(err.message, true);
@@ -394,7 +420,31 @@ function schedulePreview(immediate = false) {
 
 function updatePreview() {
   els.previewFrame.removeAttribute("src");
-  els.previewFrame.srcdoc = AppShelfRenderer.renderRunnableApp(els.codeInput.value).html;
+  const rendered = AppShelfRenderer.renderRunnableApp(els.codeInput.value);
+  els.previewFrame.srcdoc = rendered.html;
+  renderWarnings(rendered.warnings || []);
+}
+
+function renderWarnings(warnings) {
+  const uniqueWarnings = [...new Set(warnings)].slice(0, 4);
+  els.renderWarnings.replaceChildren();
+
+  if (!uniqueWarnings.length) {
+    els.renderWarnings.hidden = true;
+    return;
+  }
+
+  const title = document.createElement("strong");
+  title.textContent = "React-Hinweise";
+  els.renderWarnings.append(title);
+
+  for (const warning of uniqueWarnings) {
+    const row = document.createElement("span");
+    row.textContent = warning;
+    els.renderWarnings.append(row);
+  }
+
+  els.renderWarnings.hidden = false;
 }
 
 async function loadSettings() {
@@ -414,9 +464,18 @@ function renderSettings() {
   els.tokenInput.value = "";
   els.clearTokenInput.checked = false;
 
-  const tokenText = settings.githubTokenConfigured
-    ? `Token: ${settings.githubTokenSource === "environment" ? "per ENV gesetzt" : "gespeichert"}`
-    : "Token: nicht gesetzt";
+  let tokenText = "Token: nicht gesetzt";
+  if (settings.githubTokenConfigured) {
+    if (settings.githubTokenSource === "environment") {
+      tokenText = "Token: per ENV gesetzt";
+    } else if (!settings.githubTokenUsable && settings.githubTokenNeedsSecret) {
+      tokenText = "Token: gespeichert, APP_SECRET fehlt";
+    } else if (settings.githubTokenStorage === "encrypted") {
+      tokenText = "Token: gespeichert (verschluesselt)";
+    } else {
+      tokenText = "Token: gespeichert";
+    }
+  }
   const authText = settings.authConfigured
     ? "Auth: aktiv"
     : settings.authRequired
@@ -485,6 +544,66 @@ function splitTags(value) {
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function thumbnailForApp(app) {
+  if (app.thumbnail) return app.thumbnail;
+
+  const seed = hashText(`${app.name || ""}|${app.tags || ""}`);
+  const palettes = [
+    ["#f7faf8", "#0b766d", "#d6f0ec", "#1f2f38"],
+    ["#fbfaf4", "#916b1f", "#f0e6c8", "#263036"],
+    ["#f8f7fb", "#6d5bd0", "#e4ddfb", "#263036"],
+    ["#f7fafc", "#246a9b", "#d9ecf7", "#24323a"],
+    ["#fbf7f7", "#b24b55", "#f3d9dc", "#2e2b2c"],
+  ];
+  const palette = palettes[seed % palettes.length];
+  const tags = splitTags(app.tags).slice(0, 3);
+  const tagText = tags.length ? tags.join(" / ") : "AI App Shelf";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+    <rect width="960" height="540" fill="${palette[0]}"/>
+    <rect x="36" y="36" width="888" height="468" rx="28" fill="#ffffff" stroke="#dce4df" stroke-width="2"/>
+    <rect x="64" y="64" width="832" height="138" rx="20" fill="${palette[2]}"/>
+    <rect x="88" y="88" width="86" height="86" rx="22" fill="${palette[1]}"/>
+    <text x="131" y="141" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="30" font-weight="800" fill="#ffffff">AI</text>
+    <text x="64" y="286" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="40" font-weight="800" fill="${palette[3]}">${escapeXml(
+      truncateText(app.name || "Untitled App", 42)
+    )}</text>
+    <text x="64" y="338" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="500" fill="#62706a">${escapeXml(
+      truncateText(app.description || tagText, 78)
+    )}</text>
+    <text x="64" y="456" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="800" fill="${palette[1]}">${escapeXml(
+      truncateText(tagText, 64)
+    )}</text>
+  </svg>`;
+
+  return svgDataUri(svg);
+}
+
+function hashText(value) {
+  let hash = 0;
+  for (const char of String(value || "")) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return hash;
+}
+
+function svgDataUri(svg) {
+  const bytes = new TextEncoder().encode(svg);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `data:image/svg+xml;base64,${btoa(binary)}`;
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1)).trim()}...` : text;
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function formatDate(value) {
