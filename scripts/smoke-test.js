@@ -178,6 +178,7 @@ export default function App() {
     expect(!run.headers.get("content-security-policy").includes("frame-ancestors"), "run CSP should remain embeddable");
     const rendered = await run.text();
     expect(rendered.includes("AI App Shelf Bundle"), "bundled document missing");
+    expect(rendered.includes("https://cdn.tailwindcss.com"), "bundled document should load Tailwind");
     expect(!rendered.includes("import React"), "react import was not stripped");
 
     const settings = await fetch(`${server.base}/api/settings`).then((res) => res.json());
