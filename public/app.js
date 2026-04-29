@@ -367,7 +367,7 @@ async function openEditFlow(app) {
     }
   }
   S.editingApp = fullApp;
-  S.addStep = 'meta';
+  S.addStep = 'paste';
   S.uploadHtml = fullApp.code || '';
   S.uploadTitle = fullApp.name || '';
   S.uploadTags = fullApp.tags || '';
@@ -393,7 +393,7 @@ function renderUploadFlow() {
       <div class="upload-title">${isEdit ? `Edit · ${escHtml(S.editingApp.name)}` : 'Add to shelf'}</div>
       <div class="upload-steps">
         <span class="step-num${isPaste ? ' active' : ''}">1</span>
-        paste
+        code
         <div class="step-line"></div>
         <span class="step-num${!isPaste ? ' active' : ''}">2</span>
         metadata
@@ -433,10 +433,11 @@ function renderUploadFlow() {
 function renderPastePanel() {
   const left = document.getElementById('uploadLeft');
   const canContinue = S.uploadHtml.length > 30;
+  const isEdit = Boolean(S.editingApp);
 
   left.innerHTML = `
-    <div class="upload-section-title">HTML source</div>
-    <div class="upload-section-desc">Paste HTML from Claude, ChatGPT, or anywhere else. The shelf saves it as a self-contained app and runs it in a sandboxed iframe.</div>
+    <div class="upload-section-title">${isEdit ? 'App code' : 'HTML source'}</div>
+    <div class="upload-section-desc">${isEdit ? 'Edit the saved source. Changes are rebuilt, previewed, and saved back to the same app.' : 'Paste HTML from Claude, ChatGPT, or anywhere else. The shelf saves it as a self-contained app and runs it in a sandboxed iframe.'}</div>
     <textarea class="upload-textarea" id="uploadHtmlInput" spellcheck="false">${escHtml(S.uploadHtml)}</textarea>
     <div class="upload-footer-row">
       <span class="upload-char-count" id="charCount">${charCountText(S.uploadHtml)}</span>
@@ -495,12 +496,8 @@ function renderMetaPanel() {
   tagsInput.addEventListener('input', () => { S.uploadTags = tagsInput.value; });
 
   backBtn.addEventListener('click', () => {
-    if (!S.editingApp) {
-      S.addStep = 'paste';
-      renderUploadFlow();
-    } else {
-      closeUploadFlow();
-    }
+    S.addStep = 'paste';
+    renderUploadFlow();
   });
 
   saveBtn.addEventListener('click', () => {
