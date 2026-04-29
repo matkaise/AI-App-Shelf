@@ -181,6 +181,30 @@ export default function App() {
     expect(rendered.includes("https://cdn.tailwindcss.com"), "bundled document should load Tailwind");
     expect(!rendered.includes("import React"), "react import was not stripped");
 
+    const tsxCode = `import React, { useState } from "react";
+
+interface Probe {
+  label: string;
+  value: number;
+}
+
+const values: Record<string, number> = { first: 1 };
+
+const App: React.FC = () => {
+  const [mode] = useState<"save" | "invest">("invest");
+  const probe: Probe = { label: mode, value: values.first };
+  return <div className="p-4">{probe.label}:{probe.value}</div>;
+};
+
+export default App;`;
+    const { response: tsxResponse, body: tsxApp } = await requestJson(`${server.base}/api/apps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App-Shelf-Request": "1" },
+      body: JSON.stringify({ name: "TSX Demo", tags: "tsx", code: tsxCode }),
+    });
+    expect(tsxResponse.status === 201, `tsx create failed: ${tsxResponse.status}`);
+    expect(tsxApp.build_status === "ready", `tsx app should build a bundle, got ${tsxApp.build_status}: ${tsxApp.build_error || ""}`);
+
     const settings = await fetch(`${server.base}/api/settings`).then((res) => res.json());
     expect(!Object.hasOwn(settings, "githubToken"), "settings leaked githubToken");
 
@@ -258,10 +282,18 @@ async function testOnlineDependencyBundle() {
   const server = await startServer({ ALLOW_UNAUTHENTICATED: "true", APP_PASSWORD: "", APP_SECRET: "test-secret" });
   try {
     const dependencyCode = `import React from "react";
-import { format } from "date-fns";
+import { LineChart, Line } from "recharts";
+import { Upload } from "lucide-react";
+
+interface Point {
+  name: string;
+  value: number;
+}
+
+const data: Point[] = [{ name: "A", value: 1 }];
 
 export default function App() {
-  return <div>{format(new Date(0), "yyyy")}</div>;
+  return <div><Upload /><LineChart width={120} height={80} data={data}><Line dataKey="value" /></LineChart></div>;
 }`;
     const { response, body } = await requestJson(`${server.base}/api/apps`, {
       method: "POST",
@@ -271,7 +303,8 @@ export default function App() {
 
     expect(response.status === 201, `dependency app create failed: ${response.status}`);
     expect(body.build_status === "ready", `dependency app should bundle, got ${body.build_status}: ${body.build_error || ""}`);
-    expect(body.build_dependencies.includes("date-fns"), "dependency list should include date-fns");
+    expect(body.build_dependencies.includes("recharts"), "dependency list should include recharts");
+    expect(body.build_dependencies.includes("lucide-react"), "dependency list should include lucide-react");
 
     const dependencyRun = await fetch(`${server.base}/run/${body.id}`);
     expect(dependencyRun.headers.get("x-app-shelf-source-type") === "bundle", "dependency bundle source type not detected");

@@ -665,12 +665,12 @@ function appShelfSourcePlugin(code) {
     name: "app-shelf-source",
     setup(build) {
       build.onResolve({ filter: /^app-shelf:entry$/ }, () => ({
-        path: "entry.jsx",
+        path: "entry.tsx",
         namespace: "app-shelf-source",
       }));
 
-      build.onResolve({ filter: /^\.\/App\.jsx$/, namespace: "app-shelf-source" }, () => ({
-        path: "App.jsx",
+      build.onResolve({ filter: /^\.\/App\.tsx$/, namespace: "app-shelf-source" }, () => ({
+        path: "App.tsx",
         namespace: "app-shelf-source",
       }));
 
@@ -678,18 +678,18 @@ function appShelfSourcePlugin(code) {
         errors: [{ text: "Local file imports are not supported by the Bundler MVP." }],
       }));
 
-      build.onLoad({ filter: /^entry\.jsx$/, namespace: "app-shelf-source" }, () => ({
-        loader: "jsx",
+      build.onLoad({ filter: /^entry\.tsx$/, namespace: "app-shelf-source" }, () => ({
+        loader: "tsx",
         contents: `import React from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App.jsx";
+import App from "./App.tsx";
 
 createRoot(document.getElementById("root")).render(React.createElement(App));
 `,
       }));
 
-      build.onLoad({ filter: /^App\.jsx$/, namespace: "app-shelf-source" }, () => ({
-        loader: "jsx",
+      build.onLoad({ filter: /^App\.tsx$/, namespace: "app-shelf-source" }, () => ({
+        loader: "tsx",
         contents: code || "",
       }));
     },
@@ -733,6 +733,10 @@ function appShelfNpmPlugin() {
             contents: `const ReactDOM = window.ReactDOM;
 export const createRoot = ReactDOM.createRoot;
 export const hydrateRoot = ReactDOM.hydrateRoot;
+export const createPortal = ReactDOM.createPortal;
+export const findDOMNode = ReactDOM.findDOMNode;
+export const flushSync = ReactDOM.flushSync;
+export const unstable_batchedUpdates = ReactDOM.unstable_batchedUpdates;
 export default ReactDOM;`,
           };
         }
@@ -756,12 +760,16 @@ export const jsxDEV = jsx;`,
           contents: `const React = window.React;
 export default React;
 export const Children = React.Children;
+export const Component = React.Component;
 export const Fragment = React.Fragment;
+export const Profiler = React.Profiler;
+export const PureComponent = React.PureComponent;
 export const StrictMode = React.StrictMode;
 export const Suspense = React.Suspense;
 export const cloneElement = React.cloneElement;
 export const createContext = React.createContext;
 export const createElement = React.createElement;
+export const createFactory = React.createFactory;
 export const forwardRef = React.forwardRef;
 export const isValidElement = React.isValidElement;
 export const lazy = React.lazy;
@@ -781,7 +789,8 @@ export const useReducer = React.useReducer;
 export const useRef = React.useRef;
 export const useState = React.useState;
 export const useSyncExternalStore = React.useSyncExternalStore;
-export const useTransition = React.useTransition;`,
+export const useTransition = React.useTransition;
+export const version = React.version;`,
         };
       });
 
@@ -1456,21 +1465,61 @@ app.delete("/api/apps/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/run/:id", (req, res) => {
-  const row = db
-    .prepare("SELECT code, bundle_js, bundle_css, build_status FROM apps WHERE id = ?")
-    .get(req.params.id);
-  if (!row) return res.status(404).send("App not found");
+app.get(
+  "/run/:id",
+  asyncRoute(async (req, res) => {
+    let row = db
+      .prepare("SELECT id, code, bundle_js, bundle_css, build_status FROM apps WHERE id = ?")
+      .get(req.params.id);
+    if (!row) return res.status(404).send("App not found");
 
-  if (row.build_status === "ready" && row.bundle_js) {
+    if (row.build_status !== "ready" && ENABLE_BUNDLER && isLikelyReactCanvasApp(row.code)) {
+      await rebuildAppBundle(row.id);
+      row = db
+        .prepare("SELECT id, code, bundle_js, bundle_css, build_status FROM apps WHERE id = ?")
+        .get(req.params.id);
+    }
+
+    if (row.build_status === "ready" && row.bundle_js) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-App-Shelf-Source-Type", "bundle");
+      res.setHeader(
+        "Content-Security-Policy",
+        [
+          "default-src 'none'",
+          "script-src 'unsafe-inline' https:",
+          "style-src 'unsafe-inline' https:",
+          "img-src data: blob: https:",
+          "font-src data: https:",
+          "media-src data: blob: https:",
+          "connect-src https:",
+          "frame-src https:",
+          "worker-src blob:",
+          "child-src blob: https:",
+          "manifest-src 'none'",
+          "base-uri 'none'",
+          "form-action 'none'",
+          "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock",
+        ].join("; ")
+      );
+      res.send(renderBundledApp(row));
+      return;
+    }
+
+    const rendered = renderRunnableApp(row.code);
+
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
-    res.setHeader("X-App-Shelf-Source-Type", "bundle");
+    res.setHeader("X-App-Shelf-Source-Type", rendered.type);
+    if (rendered.warnings && rendered.warnings.length) {
+      res.setHeader("X-App-Shelf-Render-Warnings", String(rendered.warnings.length));
+    }
     res.setHeader(
       "Content-Security-Policy",
       [
         "default-src 'none'",
-        "script-src 'unsafe-inline' https:",
+        "script-src 'unsafe-inline' 'unsafe-eval' https:",
         "style-src 'unsafe-inline' https:",
         "img-src data: blob: https:",
         "font-src data: https:",
@@ -1485,39 +1534,9 @@ app.get("/run/:id", (req, res) => {
         "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock",
       ].join("; ")
     );
-    res.send(renderBundledApp(row));
-    return;
-  }
-
-  const rendered = renderRunnableApp(row.code);
-
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("X-App-Shelf-Source-Type", rendered.type);
-  if (rendered.warnings && rendered.warnings.length) {
-    res.setHeader("X-App-Shelf-Render-Warnings", String(rendered.warnings.length));
-  }
-  res.setHeader(
-    "Content-Security-Policy",
-    [
-      "default-src 'none'",
-      "script-src 'unsafe-inline' 'unsafe-eval' https:",
-      "style-src 'unsafe-inline' https:",
-      "img-src data: blob: https:",
-      "font-src data: https:",
-      "media-src data: blob: https:",
-      "connect-src https:",
-      "frame-src https:",
-      "worker-src blob:",
-      "child-src blob: https:",
-      "manifest-src 'none'",
-      "base-uri 'none'",
-      "form-action 'none'",
-      "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock",
-    ].join("; ")
-  );
-  res.send(rendered.html);
-});
+    res.send(rendered.html);
+  })
+);
 
 app.get("/api/settings", (req, res) => {
   const cfg = getGithubConfig();
