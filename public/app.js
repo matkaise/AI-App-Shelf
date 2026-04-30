@@ -216,8 +216,6 @@ function buildCard(app) {
 
   const actionsOverlay = el('div', 'card-actions-overlay');
 
-  const hoverBtns = el('div', 'card-hover-btns');
-
   const editBtn = el('button', 'card-icon-btn');
   editBtn.title = 'Edit';
   editBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2L12 4.5 5 11.5l-3 .5.5-3z"/></svg>`;
@@ -228,7 +226,8 @@ function buildCard(app) {
   delBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h9M5.5 4V2.5h3V4M4 4l.5 8h5l.5-8M6 6.5v3.5M8 6.5v3.5"/></svg>`;
   delBtn.addEventListener('click', e => { e.stopPropagation(); openConfirm(app); });
 
-  hoverBtns.append(editBtn, delBtn);
+  actionsOverlay.append(editBtn, delBtn);
+  thumb.append(actionsOverlay);
 
   const starWrap = el('div', 'card-star-wrap');
   const starBtn = el('button', `star-btn${app.starred ? ' on' : ''}`);
@@ -237,9 +236,6 @@ function buildCard(app) {
   starBtn.addEventListener('click', e => { e.stopPropagation(); toggleStar(app.id, starBtn); });
   starWrap.append(starBtn);
 
-  actionsOverlay.append(hoverBtns, starWrap);
-  thumb.append(actionsOverlay);
-
   const body = el('div', 'card-body');
   const tags = splitTags(app.tags);
   const dateStr = fmtDateShort(app.updated_at);
@@ -247,12 +243,16 @@ function buildCard(app) {
   body.innerHTML = `
     <div class="card-title-row">
       <div class="card-title">${escHtml(app.name)}</div>
-      <div class="card-date">${escHtml(dateStr)}</div>
+      <div class="card-meta-actions">
+        <div class="card-date">${escHtml(dateStr)}</div>
+      </div>
     </div>
     <div class="card-tags">
       ${tags.slice(0, 3).map(t => `<span class="card-tag">${escHtml(t)}</span>`).join('')}
     </div>
   `;
+
+  body.querySelector('.card-meta-actions').append(starWrap);
 
   card.append(thumb, body);
   card.addEventListener('click', () => openRunner(app));
