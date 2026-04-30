@@ -79,15 +79,19 @@ html, body {
 }
 
 .logo-mark {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: var(--accent);
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
   flex-shrink: 0;
+}
+
+.logo-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .logo-name {

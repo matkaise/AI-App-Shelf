@@ -49,9 +49,7 @@ function buildUI() {
   topbar.innerHTML = `
     <div class="topbar-logo">
       <div class="logo-mark">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
-          <path d="M2 3h10M2 7h10M2 11h10"/>
-        </svg>
+        <img src="/app-shelf-logo.png" alt="" />
       </div>
       <span class="logo-name">App Shelf</span>
       <span class="logo-version">v0.4</span>
