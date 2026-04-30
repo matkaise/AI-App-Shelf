@@ -301,6 +301,9 @@ html, body {
   cursor: pointer;
   border: 1px solid var(--line);
   transition: transform 120ms, box-shadow 120ms;
+  height: 246px;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-card:hover { transform: translateY(-2px); }
@@ -308,6 +311,7 @@ html, body {
 .card-thumb {
   position: relative;
   height: 160px;
+  flex: 0 0 160px;
   border-bottom: 1px solid var(--line);
   overflow: hidden;
   background: #fff;
@@ -394,7 +398,11 @@ html, body {
 .star-btn.on { color: var(--accent); }
 
 .card-body {
+  flex: 1;
+  min-height: 0;
   padding: 12px 14px 14px;
+  display: grid;
+  grid-template-rows: auto 1fr;
 }
 
 .card-title-row {
@@ -427,6 +435,9 @@ html, body {
   gap: 4px;
   margin-top: 8px;
   flex-wrap: wrap;
+  align-content: start;
+  max-height: 24px;
+  overflow: hidden;
 }
 
 .card-tag {
@@ -445,7 +456,7 @@ html, body {
   border: 1.5px dashed var(--line-strong);
   background: transparent;
   cursor: pointer;
-  height: 240px;
+  height: 246px;
   display: flex;
   flex-direction: column;
   align-items: center;
