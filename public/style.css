@@ -378,6 +378,10 @@ html, body {
   .grid-scroll {
     padding: 0 16px 20px;
   }
+
+  .app-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ── App card ── */
