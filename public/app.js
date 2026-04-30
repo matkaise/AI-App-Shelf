@@ -322,7 +322,14 @@ async function openRunner(app) {
       <div class="runner-dot" style="background:#62c554"></div>
     </div>
     <div class="runner-url">shelf://${fullApp.id}</div>
-    <button class="runner-fs" id="runnerFsBtn" type="button" title="Vollbild umschalten (F)">
+    <button class="runner-tool" id="runnerConsoleBtn" type="button" title="Show console">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2.5 4.5l3 3-3 3"/>
+        <path d="M7.5 11.5h5"/>
+      </svg>
+      <span class="runner-console-count" id="runnerConsoleCount" hidden>0</span>
+    </button>
+    <button class="runner-fs" id="runnerFsBtn" type="button" title="Toggle fullscreen (F)">
       <svg id="fsIcon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"/>
       </svg>
@@ -336,9 +343,82 @@ async function openRunner(app) {
   frame.title = fullApp.name;
   frame.src = `/run/${fullApp.id}`;
 
-  win.append(chrome, frame);
+  const consolePanel = el('div', 'runner-console-panel');
+  consolePanel.hidden = true;
+  consolePanel.innerHTML = `
+    <div class="runner-console-head">
+      <div class="runner-console-title">Console</div>
+      <div class="runner-console-actions">
+        <button class="runner-console-clear" id="runnerConsoleClearBtn" type="button">Clear</button>
+      </div>
+    </div>
+    <div class="runner-console-log" id="runnerConsoleLog">
+      <div class="runner-console-empty" id="runnerConsoleEmpty">No logs yet.</div>
+    </div>
+  `;
+
+  win.append(chrome, frame, consolePanel);
   backdrop.append(win);
   E.shelf.append(backdrop);
+
+  const consoleBtn = document.getElementById('runnerConsoleBtn');
+  const consoleCount = document.getElementById('runnerConsoleCount');
+  const consoleLog = document.getElementById('runnerConsoleLog');
+  const consoleEmpty = document.getElementById('runnerConsoleEmpty');
+  let consoleOpen = false;
+  let unreadConsole = 0;
+
+  const updateConsoleBadge = () => {
+    if (!consoleCount) return;
+    consoleCount.textContent = unreadConsole > 99 ? '99+' : String(unreadConsole);
+    consoleCount.hidden = unreadConsole === 0;
+  };
+
+  const setConsoleOpen = open => {
+    consoleOpen = open;
+    consolePanel.hidden = !open;
+    consoleBtn.classList.toggle('active', open);
+    consoleBtn.title = open ? 'Hide console' : 'Show console';
+    if (open) {
+      unreadConsole = 0;
+      updateConsoleBadge();
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+    }
+  };
+
+  const appendConsoleEntry = entry => {
+    if (!consoleLog) return;
+    consoleEmpty.hidden = true;
+    const item = el('div', `runner-console-entry ${consoleLevelClass(entry.level)}`);
+    const time = formatConsoleTime(entry.time);
+    const message = (entry.args || []).join(' ');
+    const meta = formatConsoleMeta(entry.meta);
+    item.innerHTML = `
+      <span class="runner-console-time">${escHtml(time)}</span>
+      <span class="runner-console-level">${escHtml(entry.level || 'log')}</span>
+      <span class="runner-console-message">${escHtml(message || '')}</span>
+      ${meta ? `<span class="runner-console-meta">${escHtml(meta)}</span>` : ''}
+    `;
+    consoleLog.append(item);
+    while (consoleLog.querySelectorAll('.runner-console-entry').length > 500) {
+      consoleLog.querySelector('.runner-console-entry')?.remove();
+    }
+    if (consoleOpen) {
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+    } else if (entry.level !== 'system') {
+      unreadConsole += 1;
+      updateConsoleBadge();
+    }
+  };
+
+  const onConsoleMessage = event => {
+    if (event.source !== frame.contentWindow) return;
+    const message = event.data;
+    if (!message || message.source !== 'app-shelf-runner-console') return;
+    appendConsoleEntry(message);
+  };
+  backdrop._onConsoleMessage = onConsoleMessage;
+  window.addEventListener('message', onConsoleMessage);
 
   const toggleFullscreen = () => {
     const isFs = win.classList.toggle('fullscreen');
@@ -350,6 +430,19 @@ async function openRunner(app) {
         : '<path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"/>';
     }
   };
+
+  consoleBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    setConsoleOpen(!consoleOpen);
+  });
+
+  document.getElementById('runnerConsoleClearBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    consoleLog.querySelectorAll('.runner-console-entry').forEach(entry => entry.remove());
+    consoleEmpty.hidden = false;
+    unreadConsole = 0;
+    updateConsoleBadge();
+  });
 
   document.getElementById('runnerEscBtn').addEventListener('click', closeRunner);
   document.getElementById('runnerFsBtn').addEventListener('click', e => {
@@ -374,9 +467,34 @@ function closeRunner() {
   const overlay = document.getElementById('runnerOverlay');
   if (overlay) {
     if (overlay._onKey) window.removeEventListener('keydown', overlay._onKey);
+    if (overlay._onConsoleMessage) window.removeEventListener('message', overlay._onConsoleMessage);
     overlay.remove();
   }
   S.running = null;
+}
+
+function consoleLevelClass(level) {
+  const clean = String(level || 'log').toLowerCase();
+  if (['debug', 'error', 'info', 'log', 'system', 'warn'].includes(clean)) return `is-${clean}`;
+  return 'is-log';
+}
+
+function formatConsoleTime(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function formatConsoleMeta(meta) {
+  if (!meta || typeof meta !== 'object') return '';
+  const parts = [];
+  if (meta.filename) {
+    const file = String(meta.filename).split('/').pop();
+    const line = meta.lineno ? `:${meta.lineno}${meta.colno ? `:${meta.colno}` : ''}` : '';
+    parts.push(`${file}${line}`);
+  }
+  if (meta.kind) parts.push(meta.kind);
+  return parts.join(' ');
 }
 
 // ── Add / Edit flow ────────────────────────────────────────────────────────

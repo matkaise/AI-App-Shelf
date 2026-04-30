@@ -908,6 +908,7 @@ function renderBundledApp(row) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AI App Shelf Bundle</title>
+    ${appShelfConsoleBridgeScript()}
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -924,6 +925,106 @@ ${escapeScriptContent(row.bundle_js || "")}
     </script>
   </body>
 </html>`;
+}
+
+function injectAppShelfConsoleBridge(html) {
+  const source = String(html || "");
+  const bridge = appShelfConsoleBridgeScript();
+  if (source.includes("__appShelfConsoleBridge")) return source;
+
+  if (/<head(?:\s[^>]*)?>/i.test(source)) {
+    return source.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n    ${bridge}`);
+  }
+
+  if (/<html(?:\s[^>]*)?>/i.test(source)) {
+    return source.replace(/<html(\s[^>]*)?>/i, (match) => `${match}\n  ${bridge}`);
+  }
+
+  if (/^\s*<!doctype[^>]*>/i.test(source)) {
+    return source.replace(/^\s*<!doctype[^>]*>/i, (match) => `${match}\n${bridge}`);
+  }
+
+  return `${bridge}\n${source}`;
+}
+
+function appShelfConsoleBridgeScript() {
+  return `<script>
+(function () {
+  if (window.__appShelfConsoleBridge) return;
+  window.__appShelfConsoleBridge = true;
+
+  function stringify(value) {
+    try {
+      if (value instanceof Error) return value.stack || value.message || String(value);
+      if (typeof value === "string") return value;
+      if (typeof value === "undefined") return "undefined";
+      if (value === null) return "null";
+      if (typeof value === "function") return value.toString();
+      if (typeof value === "object") {
+        var seen = [];
+        return JSON.stringify(
+          value,
+          function (key, nested) {
+            if (typeof nested === "function") return nested.toString();
+            if (nested && typeof nested === "object") {
+              if (seen.indexOf(nested) >= 0) return "[Circular]";
+              seen.push(nested);
+            }
+            return nested;
+          },
+          2
+        );
+      }
+      return String(value);
+    } catch (err) {
+      try {
+        return String(value);
+      } catch (stringErr) {
+        return "[Unserializable value]";
+      }
+    }
+  }
+
+  function emit(level, args, meta) {
+    try {
+      parent.postMessage(
+        {
+          source: "app-shelf-runner-console",
+          level: level,
+          args: Array.prototype.slice.call(args || []).map(stringify),
+          meta: meta || {},
+          time: new Date().toISOString()
+        },
+        "*"
+      );
+    } catch (err) {}
+  }
+
+  ["log", "info", "warn", "error", "debug"].forEach(function (level) {
+    var original = console[level];
+    console[level] = function () {
+      emit(level, arguments);
+      if (original) return original.apply(console, arguments);
+    };
+  });
+
+  window.addEventListener("error", function (event) {
+    emit("error", [event.error || event.message || "Script error"], {
+      filename: event.filename || "",
+      lineno: event.lineno || 0,
+      colno: event.colno || 0
+    });
+  });
+
+  window.addEventListener("unhandledrejection", function (event) {
+    emit("error", [event.reason || "Unhandled promise rejection"], {
+      kind: "unhandledrejection"
+    });
+  });
+
+  emit("system", ["Console attached"]);
+})();
+</script>`;
 }
 
 function escapeStyleContent(value) {
@@ -1534,7 +1635,7 @@ app.get(
         "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock",
       ].join("; ")
     );
-    res.send(rendered.html);
+    res.send(injectAppShelfConsoleBridge(rendered.html));
   })
 );
 

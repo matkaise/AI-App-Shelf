@@ -722,6 +722,7 @@ html, body {
 
 .runner-esc:hover { background: var(--chip-bg); color: var(--fg); }
 
+.runner-tool,
 .runner-fs {
   border: none;
   background: transparent;
@@ -733,15 +734,149 @@ html, body {
   align-items: center;
   justify-content: center;
   font-family: inherit;
+  position: relative;
 }
 
-.runner-fs:hover { background: var(--chip-bg); color: var(--fg); }
+.runner-tool:hover,
+.runner-tool.active,
+.runner-fs:hover {
+  background: var(--chip-bg);
+  color: var(--fg);
+}
+
+.runner-console-count {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
 
 .runner-frame {
   flex: 1;
+  min-height: 0;
   width: 100%;
   border: none;
   background: #fff;
+}
+
+.runner-console-panel {
+  height: min(260px, 34vh);
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: #11100d;
+  color: #f3ecd9;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.runner-console-panel[hidden] {
+  display: none;
+}
+
+.runner-console-head {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.runner-console-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(243, 236, 217, 0.76);
+}
+
+.runner-console-clear {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(243, 236, 217, 0.76);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font: 11px/1.2 "IBM Plex Sans", ui-sans-serif, system-ui;
+  cursor: pointer;
+}
+
+.runner-console-clear:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.runner-console-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0;
+  font: 11px/1.45 "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.runner-console-empty {
+  padding: 18px 12px;
+  color: rgba(243, 236, 217, 0.38);
+}
+
+.runner-console-entry {
+  display: grid;
+  grid-template-columns: 72px 52px minmax(0, 1fr);
+  gap: 8px;
+  padding: 3px 12px;
+  border-left: 3px solid transparent;
+}
+
+.runner-console-entry + .runner-console-entry {
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.runner-console-time {
+  color: rgba(243, 236, 217, 0.38);
+}
+
+.runner-console-level {
+  color: rgba(243, 236, 217, 0.58);
+  text-transform: uppercase;
+}
+
+.runner-console-message {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.runner-console-meta {
+  grid-column: 3;
+  color: rgba(243, 236, 217, 0.38);
+}
+
+.runner-console-entry.is-warn {
+  border-left-color: #f5bf4f;
+}
+
+.runner-console-entry.is-error {
+  border-left-color: #ec6a5e;
+  color: #ffd5cf;
+}
+
+.runner-console-entry.is-info {
+  border-left-color: #62a8f5;
+}
+
+.runner-console-entry.is-debug,
+.runner-console-entry.is-system {
+  opacity: 0.72;
 }
 
 /* ── Upload / Edit flow ── */
