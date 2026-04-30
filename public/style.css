@@ -17,6 +17,7 @@
   --overlay-bg: rgba(20, 16, 10, 0.55);
   --card-shadow: 0 1px 0 rgba(35, 30, 22, 0.04), 0 4px 14px rgba(35, 30, 22, 0.06);
   --accent: #c9663e;
+  --content-max-width: 1480px;
 }
 
 [data-dark] {
@@ -199,6 +200,9 @@ html, body {
 .page-header {
   padding: 24px 24px 16px;
   flex-shrink: 0;
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
 }
 
 .page-header-row {
@@ -276,12 +280,16 @@ html, body {
   overflow: auto;
   padding: 0 24px 24px;
   min-height: 0;
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
 }
 
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
   gap: 16px;
+  align-items: start;
 }
 
 /* ── App card ── */
