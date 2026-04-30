@@ -141,12 +141,6 @@ function renderPage() {
         <h1 class="page-title">Your shelf</h1>
         <p class="page-subtitle">${S.apps.length} apps · ${starredCount} starred</p>
       </div>
-      <div class="sort-controls">
-        sort:
-        <span class="sort-opt ${S.sort === 'recent' ? 'active' : ''}" data-sort="recent">recent</span>
-        <span class="sort-opt ${S.sort === 'title' ? 'active' : ''}" data-sort="title">title</span>
-        <span class="sort-opt ${S.sort === 'starred' ? 'active' : ''}" data-sort="starred">starred</span>
-      </div>
     </div>
     <div class="tag-filter" id="tagFilter"></div>
   `;
@@ -163,18 +157,32 @@ function renderPage() {
     tagFilter.append(chip);
   }
 
-  header.querySelectorAll('.sort-opt').forEach(opt => {
+  const scroll = el('div', 'grid-scroll');
+  E.pageContent.append(scroll);
+
+  const gridShell = el('div', 'grid-shell');
+  scroll.append(gridShell);
+
+  const gridToolbar = el('div', 'grid-toolbar');
+  gridToolbar.innerHTML = `
+    <div class="sort-controls">
+      sort:
+      <span class="sort-opt ${S.sort === 'recent' ? 'active' : ''}" data-sort="recent">recent</span>
+      <span class="sort-opt ${S.sort === 'title' ? 'active' : ''}" data-sort="title">title</span>
+      <span class="sort-opt ${S.sort === 'starred' ? 'active' : ''}" data-sort="starred">starred</span>
+    </div>
+  `;
+  gridShell.append(gridToolbar);
+
+  gridToolbar.querySelectorAll('.sort-opt').forEach(opt => {
     opt.addEventListener('click', () => {
       S.sort = opt.dataset.sort;
       renderPage();
     });
   });
 
-  const scroll = el('div', 'grid-scroll');
-  E.pageContent.append(scroll);
-
   const grid = el('div', 'app-grid');
-  scroll.append(grid);
+  gridShell.append(grid);
 
   const display = sortApps(filtered, S.sort);
   for (const app of display) {

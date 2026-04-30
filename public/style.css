@@ -366,6 +366,18 @@ html, body {
   margin: 0 auto;
 }
 
+.grid-shell {
+  width: 100%;
+  max-width: 100%;
+}
+
+.grid-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 22px;
+  margin-bottom: 12px;
+}
+
 .app-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), var(--card-max-width)));
@@ -374,9 +386,31 @@ html, body {
   justify-content: start;
 }
 
+@media (min-width: 761px) {
+  .grid-shell {
+    max-width: 704px;
+  }
+}
+
+@media (min-width: 1112px) {
+  .grid-shell {
+    max-width: 1064px;
+  }
+}
+
+@media (min-width: 1472px) {
+  .grid-shell {
+    max-width: 1424px;
+  }
+}
+
 @media (max-width: 760px) {
   .grid-scroll {
     padding: 0 16px 20px;
+  }
+
+  .grid-toolbar {
+    justify-content: flex-start;
   }
 
   .app-grid {
