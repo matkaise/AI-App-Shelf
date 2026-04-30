@@ -60,7 +60,8 @@ html, body {
 
 /* ── Topbar ── */
 .topbar {
-  height: 56px;
+  min-height: 56px;
+  height: auto;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -74,6 +75,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .logo-mark {
@@ -113,7 +115,8 @@ html, body {
   padding: 6px 12px;
   border-radius: 7px;
   background: var(--chip-bg);
-  width: 220px;
+  width: clamp(180px, 22vw, 220px);
+  min-width: 0;
 }
 
 .search-box input {
@@ -123,6 +126,7 @@ html, body {
   color: var(--fg);
   font-size: 12px;
   flex: 1;
+  min-width: 0;
   font-family: inherit;
   padding: 0;
 }
@@ -275,6 +279,82 @@ html, body {
   color: var(--chip-fg-active);
 }
 
+/* ── Responsive shell ── */
+@media (max-width: 760px) {
+  .topbar {
+    align-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 16px;
+  }
+
+  .topbar-logo {
+    flex: 1 1 auto;
+  }
+
+  .topbar-spacer {
+    display: none;
+  }
+
+  .search-box {
+    order: 2;
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .page-header {
+    padding: 22px 16px 14px;
+  }
+
+  .page-header-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .sort-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .tag-filter {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .tag-filter::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tag-chip {
+    flex-shrink: 0;
+  }
+}
+
+@media (max-width: 430px) {
+  .logo-version,
+  .search-shortcut,
+  #syncLabel {
+    display: none;
+  }
+
+  .sync-btn,
+  .add-btn {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .add-btn {
+    gap: 0;
+    font-size: 0;
+  }
+}
+
 /* ── Grid ── */
 .grid-scroll {
   flex: 1;
@@ -292,6 +372,12 @@ html, body {
   gap: 16px;
   align-items: start;
   justify-content: start;
+}
+
+@media (max-width: 760px) {
+  .grid-scroll {
+    padding: 0 16px 20px;
+  }
 }
 
 /* ── App card ── */
