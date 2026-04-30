@@ -74,9 +74,13 @@ function buildUI() {
       <span id="syncLabel">Sync</span>
     </button>
     <button id="settingsBtn" class="icon-btn" type="button" title="Settings" aria-label="Settings">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M6.2 1.8a.9.9 0 0 1 1.6 0l.32.64c.12.25.4.38.67.3l.68-.2a.9.9 0 0 1 1.1 1.1l-.2.68c-.08.27.05.55.3.67l.64.32a.9.9 0 0 1 0 1.6l-.64.32c-.25.12-.38.4-.3.67l.2.68a.9.9 0 0 1-1.1 1.1l-.68-.2a.6.6 0 0 0-.67.3l-.32.64a.9.9 0 0 1-1.6 0l-.32-.64a.6.6 0 0 0-.67-.3l-.68.2a.9.9 0 0 1-1.1-1.1l.2-.68a.6.6 0 0 0-.3-.67l-.64-.32a.9.9 0 0 1 0-1.6l.64-.32a.6.6 0 0 0 .3-.67l-.2-.68a.9.9 0 0 1 1.1-1.1l.68.2a.6.6 0 0 0 .67-.3z"/>
-        <circle cx="7" cy="7" r="1.65"/>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2.5 4.5h4"/>
+        <path d="M9.5 4.5h4"/>
+        <circle cx="8" cy="4.5" r="1.45"/>
+        <path d="M2.5 11.5h7"/>
+        <path d="M12.5 11.5h1"/>
+        <circle cx="11" cy="11.5" r="1.45"/>
       </svg>
     </button>
     <button id="addBtn" class="add-btn" type="button">
