@@ -437,7 +437,7 @@ function renderUploadFlow() {
       <div class="upload-right">
         <div class="upload-section-title">Live preview</div>
         <div class="preview-container" id="previewContainer">
-          <div class="preview-placeholder" id="previewPlaceholder">Paste HTML to preview</div>
+          <div class="preview-placeholder" id="previewPlaceholder">Paste source to preview</div>
         </div>
       </div>
     </div>
@@ -469,8 +469,8 @@ function renderPastePanel() {
   const isEdit = Boolean(S.editingApp);
 
   left.innerHTML = `
-    <div class="upload-section-title">${isEdit ? 'App code' : 'HTML source'}</div>
-    <div class="upload-section-desc">${isEdit ? 'Edit the saved source. Changes are rebuilt, previewed, and saved back to the same app.' : 'Paste HTML from Claude, ChatGPT, or anywhere else. The shelf saves it as a self-contained app and runs it in a sandboxed iframe.'}</div>
+    <div class="upload-section-title">App source</div>
+    <div class="upload-section-desc">${isEdit ? 'Edit the saved source. Changes are rebuilt, previewed, and saved back to the same app.' : 'Paste HTML, React, or TSX from Claude, ChatGPT, Gemini, or anywhere else. App Shelf stores the source, bundles supported imports when needed, and runs each app in a sandboxed iframe.'}</div>
     <textarea class="upload-textarea" id="uploadHtmlInput" spellcheck="false">${escHtml(S.uploadHtml)}</textarea>
     <div class="upload-footer-row">
       <span class="upload-char-count" id="charCount">${charCountText(S.uploadHtml)}</span>
@@ -569,7 +569,7 @@ function syncPreview() {
     if (!document.getElementById('previewPlaceholder')) {
       const ph = el('div', 'preview-placeholder');
       ph.id = 'previewPlaceholder';
-      ph.textContent = 'Paste HTML to preview';
+      ph.textContent = 'Paste source to preview';
       container.append(ph);
     }
   }
