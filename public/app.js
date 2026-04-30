@@ -63,7 +63,7 @@ function buildUI() {
         <path d="M11 11L8 8" stroke-linecap="round"/>
       </svg>
       <input id="searchInput" placeholder="Search apps &amp; tags…" autocomplete="off" />
-      <span class="search-shortcut">⌘K</span>
+      <span id="searchShortcut" class="search-shortcut">Ctrl K</span>
     </div>
     <button id="darkBtn" class="icon-btn" type="button"></button>
     <button id="syncBtn" class="sync-btn" type="button">
@@ -73,10 +73,10 @@ function buildUI() {
       </svg>
       <span id="syncLabel">Sync</span>
     </button>
-    <button id="settingsBtn" class="icon-btn" type="button" title="Einstellungen">
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="8" cy="8" r="2.5"/>
-        <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.7 3.7l.7.7M11.6 11.6l.7.7M3.7 12.3l.7-.7M11.6 4.4l.7-.7"/>
+    <button id="settingsBtn" class="icon-btn" type="button" title="Settings" aria-label="Settings">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6.2 1.8a.9.9 0 0 1 1.6 0l.32.64c.12.25.4.38.67.3l.68-.2a.9.9 0 0 1 1.1 1.1l-.2.68c-.08.27.05.55.3.67l.64.32a.9.9 0 0 1 0 1.6l-.64.32c-.25.12-.38.4-.3.67l.2.68a.9.9 0 0 1-1.1 1.1l-.68-.2a.6.6 0 0 0-.67.3l-.32.64a.9.9 0 0 1-1.6 0l-.32-.64a.6.6 0 0 0-.67-.3l-.68.2a.9.9 0 0 1-1.1-1.1l.2-.68a.6.6 0 0 0-.3-.67l-.64-.32a.9.9 0 0 1 0-1.6l.64-.32a.6.6 0 0 0 .3-.67l-.2-.68a.9.9 0 0 1 1.1-1.1l.68.2a.6.6 0 0 0 .67-.3z"/>
+        <circle cx="7" cy="7" r="1.65"/>
       </svg>
     </button>
     <button id="addBtn" class="add-btn" type="button">
@@ -96,6 +96,7 @@ function buildUI() {
   E.shelf = shelf;
   E.pageContent = content;
   E.searchInput = document.getElementById('searchInput');
+  E.searchShortcut = document.getElementById('searchShortcut');
   E.darkBtn = document.getElementById('darkBtn');
   E.syncBtn = document.getElementById('syncBtn');
   E.syncIcon = document.getElementById('syncIcon');
@@ -105,6 +106,7 @@ function buildUI() {
   E.toast = document.getElementById('toast');
 
   applyDark(S.dark);
+  E.searchShortcut.textContent = isMacPlatform() ? '⌘K' : 'Ctrl K';
 
   E.darkBtn.addEventListener('click', () => applyDark(!S.dark));
   E.addBtn.addEventListener('click', openAddFlow);
@@ -123,7 +125,28 @@ function buildUI() {
     document.getElementById('settingsDialog').close()
   );
   document.getElementById('settingsForm').addEventListener('submit', saveSettings);
+  window.addEventListener('keydown', handleGlobalShortcuts);
 
+}
+
+function isMacPlatform() {
+  return /Mac|iPhone|iPad|iPod/i.test(navigator.platform || '');
+}
+
+function handleGlobalShortcuts(e) {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+    if (
+      document.getElementById('uploadFlow') ||
+      document.getElementById('runnerOverlay') ||
+      document.getElementById('confirmOverlay') ||
+      document.getElementById('settingsDialog')?.open
+    ) {
+      return;
+    }
+    e.preventDefault();
+    E.searchInput?.focus();
+    E.searchInput?.select();
+  }
 }
 
 // ── Page render (header + grid) ────────────────────────────────────────────
@@ -588,11 +611,11 @@ function scheduleThumbnailRefresh() {
 }
 
 function saveMessage(app) {
-  if (!app) return 'Gespeichert.';
-  if (app.build_status === 'ready') return 'Gespeichert. Bundle bereit.';
-  if (app.build_status === 'error') return 'Gespeichert. Browser-Fallback aktiv.';
-  if (app.build_status === 'fallback') return 'Gespeichert. Browser-Fallback aktiv.';
-  return 'Gespeichert.';
+  if (!app) return 'Saved.';
+  if (app.build_status === 'ready') return 'Saved. Bundle ready.';
+  if (app.build_status === 'error') return 'Saved. Browser fallback active.';
+  if (app.build_status === 'fallback') return 'Saved. Browser fallback active.';
+  return 'Saved.';
 }
 
 function closeUploadFlow() {
@@ -616,8 +639,8 @@ function openConfirm(app) {
     <p class="confirm-title">Delete "${escHtml(app.name)}"?</p>
     <p class="confirm-body">This removes the app and its HTML from the shelf. You can't undo this.</p>
     <div class="confirm-actions">
-      <button class="confirm-cancel-btn" id="confirmCancelBtn">Abbrechen</button>
-      <button class="confirm-delete-btn" id="confirmDeleteBtn">App löschen</button>
+      <button class="confirm-cancel-btn" id="confirmCancelBtn">Cancel</button>
+      <button class="confirm-delete-btn" id="confirmDeleteBtn">Delete app</button>
     </div>
   `;
   backdrop.append(box);
@@ -699,7 +722,7 @@ async function toggleStar(id, btn) {
 async function deleteApp(id) {
   try {
     await api(`/api/apps/${id}`, { method: 'DELETE' });
-    showToast('Gelöscht.');
+    showToast('Deleted.');
     await loadApps();
   } catch (err) {
     showToast(err.message, true);
@@ -735,19 +758,19 @@ function renderSettings() {
   document.getElementById('tokenInput').value = '';
   document.getElementById('clearTokenInput').checked = false;
 
-  let tokenText = 'Token: nicht gesetzt';
+  let tokenText = 'Token: not set';
   if (s.githubTokenConfigured) {
-    if (s.githubTokenSource === 'environment') tokenText = 'Token: per ENV gesetzt';
-    else if (!s.githubTokenUsable && s.githubTokenNeedsSecret) tokenText = 'Token: gespeichert, APP_SECRET fehlt';
-    else if (s.githubTokenStorage === 'encrypted') tokenText = 'Token: gespeichert (verschlüsselt)';
-    else if (s.githubTokenStorage === 'plaintext') tokenText = 'Token: gespeichert (Klartext)';
-    else tokenText = 'Token: gespeichert';
+    if (s.githubTokenSource === 'environment') tokenText = 'Token: set via ENV';
+    else if (!s.githubTokenUsable && s.githubTokenNeedsSecret) tokenText = 'Token: saved, APP_SECRET missing';
+    else if (s.githubTokenStorage === 'encrypted') tokenText = 'Token: saved (encrypted)';
+    else if (s.githubTokenStorage === 'plaintext') tokenText = 'Token: saved (plaintext)';
+    else tokenText = 'Token: saved';
   }
   const authText = s.authConfigured
-    ? 'Auth: aktiv'
+    ? 'Auth: active'
     : s.authRequired
-      ? 'Auth: gesperrt, Passwort fehlt'
-      : 'Auth: bewusst deaktiviert';
+      ? 'Auth: locked, password missing'
+      : 'Auth: intentionally disabled';
   document.getElementById('settingsMeta').textContent = `${tokenText} · ${authText}`;
 }
 
@@ -771,17 +794,17 @@ async function saveSettings(e) {
   }
 
   const btn = document.getElementById('saveSettingsBtn');
-  btn.textContent = 'Speichert…';
+  btn.textContent = 'Saving…';
   btn.disabled = true;
   try {
     await api('/api/settings', { method: 'PUT', body: payload });
     await loadSettings();
     document.getElementById('settingsDialog').close();
-    showToast('Einstellungen gespeichert.');
+    showToast('Settings saved.');
   } catch (err) {
     showToast(err.message, true);
   } finally {
-    btn.textContent = 'Speichern';
+    btn.textContent = 'Save';
     btn.disabled = false;
   }
 }

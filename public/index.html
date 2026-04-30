@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -20,9 +20,9 @@
         <div class="settings-head">
           <div>
             <p class="settings-eyebrow">Sync</p>
-            <h2 class="settings-title">Einstellungen</h2>
+            <h2 class="settings-title">Settings</h2>
           </div>
-          <button id="closeSettingsBtn" class="close-btn" type="button" aria-label="Schließen">×</button>
+          <button id="closeSettingsBtn" class="close-btn" type="button" aria-label="Close">&times;</button>
         </div>
         <label class="settings-label">
           <span>GitHub Repo</span>
@@ -34,21 +34,21 @@
             <input id="branchInput" class="settings-input" placeholder="main" autocomplete="off" />
           </label>
           <label class="settings-label">
-            <span>Datei</span>
+            <span>File</span>
             <input id="fileInput" class="settings-input" placeholder="apps.json" autocomplete="off" />
           </label>
         </div>
         <label class="settings-label">
           <span>GitHub Token</span>
-          <input id="tokenInput" class="settings-input" type="password" autocomplete="off" placeholder="Neuen Token eintragen" />
+          <input id="tokenInput" class="settings-input" type="password" autocomplete="off" placeholder="Enter a new token" />
         </label>
         <label class="settings-check-row">
           <input id="clearTokenInput" type="checkbox" />
-          <span>Gespeicherten Token löschen</span>
+          <span>Clear saved token</span>
         </label>
         <p id="settingsMeta" class="settings-meta"></p>
         <div class="settings-footer">
-          <button id="saveSettingsBtn" class="settings-save-btn" type="submit">Speichern</button>
+          <button id="saveSettingsBtn" class="settings-save-btn" type="submit">Save</button>
         </div>
       </form>
     </dialog>
