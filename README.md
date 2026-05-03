@@ -2,6 +2,8 @@
 
 AI App Shelf is a self-hosted dashboard for AI-generated mini apps. Paste HTML, React, or TSX from Claude, ChatGPT, Gemini, or similar tools, save it to your shelf, and open each app in a sandboxed runner.
 
+![AI App Shelf dashboard](docs/dashboard-screenshot.png)
+
 It includes:
 
 - A clean app dashboard with search, tags, favorites, and screenshot thumbnails
