@@ -5,3 +5,5 @@ data/
 .env
 .env.*
 .test-data-*/
+docs/screenshot.png
+docs/screenshot-mobile.png
